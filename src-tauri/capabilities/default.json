@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    "opener:default",
+    "sql:default",
+    {
+      "identifier": "sql:allow-load",
+      "allow": [{ "db": "sqlite:careercompiler.db" }]
+    },
+    {
+      "identifier": "sql:allow-execute",
+      "allow": [{ "db": "sqlite:careercompiler.db" }]
+    },
+    {
+      "identifier": "sql:allow-select",
+      "allow": [{ "db": "sqlite:careercompiler.db" }]
+    }
+  ]
+}
