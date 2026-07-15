@@ -30,6 +30,12 @@ describe("zod schemas", () => {
       relevanceScore: 1,
       isUserEdited: false,
       included: true,
+      locked: false,
+      approved: false,
+      rejected: false,
+      generationSource: "ai",
+      generationReason: "test",
+      keywordsAddressed: [],
       selectionReason: "test",
     };
     expect(() =>
@@ -44,6 +50,7 @@ describe("zod schemas", () => {
           portfolioUrl: "",
           linkedInUrl: "",
           githubUrl: "",
+          workAuthorizationNote: "",
         },
         summary: [],
         education: [],
@@ -57,12 +64,15 @@ describe("zod schemas", () => {
             startDate: "",
             endDate: "",
             isCurrent: false,
+            locked: false,
             bullets: [bullet],
           },
         ],
         skills: [],
         sectionOrder: ["projects", "skills"],
         compactionActions: [],
+        layout: { bodyFontSize: 9.5, spacingScale: 1, condensedSkills: false },
+        approvedWarningCodes: [],
       }),
     ).not.toThrow();
   });
@@ -77,7 +87,7 @@ describe("zod schemas", () => {
       deEmphasisAreas: [],
       omittedItems: [],
       skillSelection: ["React"],
-      contentBudget: { maxBullets: 10, maxProjects: 3, includeSummary: true },
+      contentBudget: { maxBullets: 10, maxProjects: 3, includeSummary: true, maxBulletsPerItem: 2 },
     });
     expect(plan.contentBudget.maxBullets).toBe(10);
   });

@@ -4,7 +4,7 @@ import { Database, FileText, ListChecks, Sparkles } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, LoadingState } from "../../components/States";
-import { useRepository } from "../../lib/database/RepositoryProvider";
+import { useRepository } from "../../lib/database/repositoryContext";
 
 function StatCard({ label, value, icon: Icon }: { label: string; value: number; icon: LucideIcon }) {
   return (

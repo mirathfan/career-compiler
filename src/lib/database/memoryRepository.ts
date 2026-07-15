@@ -1,17 +1,25 @@
 import type {
   AppSettings,
+  ApprovedBulletVariant,
   BackupPayload,
   CareerFact,
   CareerItem,
   DashboardMetrics,
+  FactUsage,
   Job,
   Profile,
   ResumeVersion,
   Skill,
 } from "../../types/domain";
 import { createId, nowIso } from "../utils";
+import {
+  emptyGenerationMetadata,
+  normalizeGenerationMetadata,
+  normalizeTailoredResume,
+  normalizeValidationIssues,
+} from "../resume/normalize";
 import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSkills } from "./seed";
-import type { AppRepository, CareerFactFilters } from "./repository";
+import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
 
 interface MemoryState {
   profile: Profile | null;
@@ -20,6 +28,7 @@ interface MemoryState {
   skills: Skill[];
   jobs: Job[];
   resumes: ResumeVersion[];
+  approvedVariants: ApprovedBulletVariant[];
   settings: AppSettings;
 }
 
@@ -31,6 +40,7 @@ function emptyState(): MemoryState {
     skills: [],
     jobs: [],
     resumes: [],
+    approvedVariants: [],
     settings: { ...defaultSettings },
   };
 }
@@ -58,7 +68,33 @@ export class MemoryRepository implements AppRepository {
     }
     const existing = localStorage.getItem(this.persistKey);
     if (existing) {
-      this.state = JSON.parse(existing) as MemoryState;
+      const stored = JSON.parse(existing) as Partial<MemoryState>;
+      this.state = {
+        ...emptyState(),
+        ...stored,
+        approvedVariants: stored.approvedVariants ?? [],
+        settings: {
+          ...defaultSettings,
+          ...(stored.settings ?? {}),
+          tailoringDefaults: {
+            ...defaultSettings.tailoringDefaults,
+            ...(stored.settings?.tailoringDefaults ?? {}),
+          },
+        },
+        resumes: (stored.resumes ?? []).map((resume) => ({
+          ...resume,
+          contentJson: normalizeTailoredResume(resume.contentJson),
+          validationJson: normalizeValidationIssues(resume.validationJson),
+          parentResumeVersionId: resume.parentResumeVersionId ?? "",
+          generationProvider: resume.generationProvider ?? "deterministic",
+          generationModel: resume.generationModel ?? "",
+          promptVersion: resume.promptVersion ?? "",
+          generationMetadataJson: normalizeGenerationMetadata(resume.generationMetadataJson),
+          deterministicBaselineJson: resume.deterministicBaselineJson
+            ? normalizeTailoredResume(resume.deterministicBaselineJson)
+            : null,
+        })),
+      };
       return;
     }
     this.persist();
@@ -217,6 +253,17 @@ export class MemoryRepository implements AppRepository {
     this.persist();
   }
 
+  async bulkUpdateCareerFacts(
+    ids: string[],
+    changes: Partial<Pick<CareerFact, "enabled" | "evidenceStatus">>,
+  ) {
+    const selected = new Set(ids);
+    this.state.careerFacts = this.state.careerFacts.map((fact) =>
+      selected.has(fact.id) ? { ...fact, ...changes, updatedAt: nowIso() } : fact,
+    );
+    this.persist();
+  }
+
   async listSkills() {
     return clone(this.state.skills.sort((a, b) => a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
   }
@@ -272,6 +319,10 @@ export class MemoryRepository implements AppRepository {
     return clone(this.state.resumes.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }
 
+  async getResumeVersion(id: string) {
+    return clone(this.state.resumes.find((resume) => resume.id === id) ?? null);
+  }
+
   async saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">) {
     const now = nowIso();
     const existing = resume.id
@@ -286,6 +337,14 @@ export class MemoryRepository implements AppRepository {
       validationJson: resume.validationJson ?? existing?.validationJson ?? [],
       status: resume.status ?? existing?.status ?? "draft",
       lastExportPath: resume.lastExportPath ?? existing?.lastExportPath ?? "",
+      parentResumeVersionId: resume.parentResumeVersionId ?? existing?.parentResumeVersionId ?? "",
+      generationProvider: resume.generationProvider ?? existing?.generationProvider ?? "deterministic",
+      generationModel: resume.generationModel ?? existing?.generationModel ?? "",
+      promptVersion: resume.promptVersion ?? existing?.promptVersion ?? "",
+      generationMetadataJson:
+        resume.generationMetadataJson ?? existing?.generationMetadataJson ?? emptyGenerationMetadata,
+      deterministicBaselineJson:
+        resume.deterministicBaselineJson ?? existing?.deterministicBaselineJson ?? null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -297,6 +356,74 @@ export class MemoryRepository implements AppRepository {
   async deleteResumeVersion(id: string) {
     this.state.resumes = this.state.resumes.filter((resume) => resume.id !== id);
     this.persist();
+  }
+
+  async listApprovedBulletVariants(filters: ApprovedVariantFilters = {}) {
+    const factIds = filters.factIds ? new Set(filters.factIds) : null;
+    const roles = filters.roleCategories
+      ? new Set(filters.roleCategories.map((role) => role.toLowerCase()))
+      : null;
+    return clone(
+      this.state.approvedVariants
+        .filter((variant) => !filters.careerItemId || variant.careerItemId === filters.careerItemId)
+        .filter((variant) => !factIds || variant.sourceFactIds.every((factId) => factIds.has(factId)))
+        .filter(
+          (variant) =>
+            !roles ||
+            variant.roleCategories.length === 0 ||
+            variant.roleCategories.some((role) => roles.has(role.toLowerCase())),
+        )
+        .sort((a, b) => b.approvedAt.localeCompare(a.approvedAt)),
+    );
+  }
+
+  async saveApprovedBulletVariant(
+    variant: Partial<ApprovedBulletVariant> &
+      Pick<ApprovedBulletVariant, "careerItemId" | "sourceFactIds" | "text">,
+  ) {
+    const now = nowIso();
+    const existing = variant.id
+      ? this.state.approvedVariants.find((item) => item.id === variant.id)
+      : undefined;
+    const saved: ApprovedBulletVariant = {
+      id: existing?.id ?? variant.id ?? createId("approved-variant"),
+      careerItemId: variant.careerItemId,
+      sourceFactIds: variant.sourceFactIds,
+      text: variant.text,
+      roleCategories: variant.roleCategories ?? existing?.roleCategories ?? [],
+      skillTags: variant.skillTags ?? existing?.skillTags ?? [],
+      targetJobId: variant.targetJobId ?? existing?.targetJobId ?? "",
+      creationSource: variant.creationSource ?? existing?.creationSource ?? "user",
+      approvedAt: variant.approvedAt ?? existing?.approvedAt ?? now,
+      createdAt: existing?.createdAt ?? variant.createdAt ?? now,
+    };
+    this.state.approvedVariants = [
+      ...this.state.approvedVariants.filter((item) => item.id !== saved.id),
+      saved,
+    ];
+    this.persist();
+    return clone(saved);
+  }
+
+  async deleteApprovedBulletVariant(id: string) {
+    this.state.approvedVariants = this.state.approvedVariants.filter((variant) => variant.id !== id);
+    this.persist();
+  }
+
+  async listFactUsage(factId: string): Promise<FactUsage[]> {
+    return this.state.resumes.flatMap((resume) =>
+      [...resume.contentJson.projects, ...resume.contentJson.experience].flatMap((section) =>
+        section.bullets
+          .filter((bullet) => bullet.sourceFactIds.includes(factId))
+          .map((bullet) => ({
+            factId,
+            resumeVersionId: resume.id,
+            resumeName: resume.name,
+            bulletId: bullet.id,
+            bulletText: bullet.text,
+          })),
+      ),
+    );
   }
 
   async getDashboardMetrics(): Promise<DashboardMetrics> {
@@ -312,7 +439,14 @@ export class MemoryRepository implements AppRepository {
   }
 
   async getSettings() {
-    return clone(this.state.settings);
+    return clone({
+      ...defaultSettings,
+      ...this.state.settings,
+      tailoringDefaults: {
+        ...defaultSettings.tailoringDefaults,
+        ...this.state.settings.tailoringDefaults,
+      },
+    });
   }
 
   async saveSettings(settings: AppSettings) {
@@ -325,7 +459,7 @@ export class MemoryRepository implements AppRepository {
     return {
       ...clone(this.state),
       exportedAt: nowIso(),
-      schemaVersion: 1,
+      schemaVersion: 2,
     };
   }
 
@@ -337,6 +471,7 @@ export class MemoryRepository implements AppRepository {
       skills: payload.skills,
       jobs: payload.jobs,
       resumes: payload.resumes,
+      approvedVariants: payload.approvedVariants ?? [],
       settings: payload.settings,
     };
     this.persist();

@@ -19,6 +19,7 @@ function conciseBullet(statement: string) {
 function sectionForItem(
   item: CareerItem,
   bullets: ResumeBullet[],
+  locked = false,
 ): ResumeCareerItemSection {
   return {
     careerItemId: item.id,
@@ -28,6 +29,7 @@ function sectionForItem(
     startDate: item.startDate,
     endDate: item.endDate,
     isCurrent: item.isCurrent,
+    locked,
     bullets,
   };
 }
@@ -59,6 +61,11 @@ export function generateTailoredResume({
   const bulletsByItem = new Map<string, ResumeBullet[]>();
   for (const fact of selectedFacts.slice(0, plan.contentBudget.maxBullets)) {
     const score = scoreByFactId.get(fact.id);
+    const keywordsAddressed = [...analysis.requiredSkills, ...analysis.preferredSkills]
+      .filter((keyword) =>
+        [fact.statement, ...fact.skillTags].join(" ").toLowerCase().includes(keyword.toLowerCase()),
+      )
+      .slice(0, 5);
     const bullet: ResumeBullet = {
       id: createId("bullet"),
       text: conciseBullet(fact.statement),
@@ -66,9 +73,18 @@ export function generateTailoredResume({
       relevanceScore: score?.score ?? fact.importance,
       isUserEdited: false,
       included: true,
+      locked: false,
+      approved: false,
+      rejected: false,
+      generationSource: "deterministic",
+      generationReason: score?.reasons.join(" ") ?? "Selected by deterministic evidence scoring.",
+      keywordsAddressed,
       selectionReason: score?.reasons.join(" ") ?? "Selected by deterministic evidence scoring.",
     };
-    bulletsByItem.set(fact.careerItemId, [...(bulletsByItem.get(fact.careerItemId) ?? []), bullet]);
+    const current = bulletsByItem.get(fact.careerItemId) ?? [];
+    if (current.length < plan.contentBudget.maxBulletsPerItem) {
+      bulletsByItem.set(fact.careerItemId, [...current, bullet]);
+    }
   }
 
   const sections = [...bulletsByItem.entries()]
@@ -110,6 +126,7 @@ export function generateTailoredResume({
       portfolioUrl: profile.portfolioUrl,
       linkedInUrl: profile.linkedInUrl,
       githubUrl: profile.githubUrl,
+      workAuthorizationNote: profile.workAuthorizationNote,
     },
     summary: plan.contentBudget.includeSummary
       ? [
@@ -124,5 +141,7 @@ export function generateTailoredResume({
     skills: selectedSkills,
     sectionOrder: plan.sectionOrder,
     compactionActions: [],
+    layout: { bodyFontSize: 9.5, spacingScale: 1, condensedSkills: false },
+    approvedWarningCodes: [],
   };
 }

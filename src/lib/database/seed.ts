@@ -5,8 +5,21 @@ const seedTimestamp = "2026-07-15T00:00:00.000Z";
 export const defaultSettings: AppSettings = {
   aiProvider: "mock",
   modelName: "gpt-5.6",
-  defaultTemplateId: "ats-one-page",
+  defaultTemplateId: "mir-standard",
   defaultExportDirectory: "",
+  tailoringDefaults: {
+    summaryMode: "auto",
+    projectCount: 3,
+    bulletsPerProject: 2,
+    sectionOrderPreset: "mir-standard",
+    targetRoleCategory: "full-stack engineer",
+    emphasisTags: [],
+    excludedTags: [],
+    lockedCareerItemIds: [],
+    requiredFactIds: [],
+    excludedFactIds: [],
+    strictOnePage: true,
+  },
 };
 
 export const seedProfile: Profile = {
@@ -230,7 +243,7 @@ const skillGroups: Array<[string, string[], string]> = [
   ["Frontend and mobile", ["React", "React Native", "Expo", "Next.js", "Vite", "Tailwind CSS"], ""],
   ["Backend", ["FastAPI", "Node.js", "REST APIs", "PostgreSQL", "Supabase", "Firebase", "Alembic"], ""],
   ["AI and ML", ["OpenAI APIs", "LangGraph", "Embeddings", "Retrieval systems", "LLM evaluation", "PyTorch", "ONNX", "ONNX Runtime", "Computer vision"], ""],
-  ["Infrastructure and tools", ["Git", "GitHub Actions", "Docker", "Docker Compose", "EAS", "TestFlight", "CUDA", "WSL2"], ""],
+  ["Infrastructure and tools", ["Git", "GitHub Actions", "Docker", "Docker Compose", "EAS", "TestFlight", "CUDA", "WSL2", "Testing"], ""],
 ];
 
 export const seedSkills: Skill[] = skillGroups.flatMap(([category, names, note]) =>

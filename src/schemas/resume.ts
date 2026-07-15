@@ -1,13 +1,20 @@
 import { z } from "zod";
 
+const sectionNameSchema = z.enum(["summary", "education", "experience", "projects", "skills"]);
+
 export const ResumeBulletSchema = z.object({
-  id: z.string(),
+  id: z.string().min(1),
   text: z.string().min(1),
   sourceFactIds: z.array(z.string()).min(1),
   relevanceScore: z.number(),
   isUserEdited: z.boolean(),
-  included: z.boolean().default(true),
-  locked: z.boolean().optional(),
+  included: z.boolean(),
+  locked: z.boolean(),
+  approved: z.boolean(),
+  rejected: z.boolean(),
+  generationSource: z.enum(["ai", "deterministic", "user"]),
+  generationReason: z.string(),
+  keywordsAddressed: z.array(z.string()),
   selectionReason: z.string(),
 });
 
@@ -15,7 +22,7 @@ export const ResumePlanSchema = z.object({
   targetPositioning: z.string(),
   selectedCareerItemIds: z.array(z.string()),
   selectedFactIds: z.array(z.string()),
-  sectionOrder: z.array(z.enum(["summary", "education", "experience", "projects", "skills"])),
+  sectionOrder: z.array(sectionNameSchema),
   emphasisAreas: z.array(z.string()),
   deEmphasisAreas: z.array(z.string()),
   omittedItems: z.array(z.object({ careerItemId: z.string(), reason: z.string() })),
@@ -24,6 +31,7 @@ export const ResumePlanSchema = z.object({
     maxBullets: z.number().int().positive(),
     maxProjects: z.number().int().positive(),
     includeSummary: z.boolean(),
+    maxBulletsPerItem: z.number().int().positive(),
   }),
 });
 
@@ -35,6 +43,7 @@ const itemSectionSchema = z.object({
   startDate: z.string(),
   endDate: z.string(),
   isCurrent: z.boolean(),
+  locked: z.boolean(),
   bullets: z.array(ResumeBulletSchema),
 });
 
@@ -49,6 +58,7 @@ export const TailoredResumeSchema = z.object({
     portfolioUrl: z.string(),
     linkedInUrl: z.string(),
     githubUrl: z.string(),
+    workAuthorizationNote: z.string(),
   }),
   summary: z.array(z.string()),
   education: z.array(
@@ -63,6 +73,205 @@ export const TailoredResumeSchema = z.object({
   experience: z.array(itemSectionSchema),
   projects: z.array(itemSectionSchema),
   skills: z.array(z.string()),
-  sectionOrder: z.array(z.enum(["summary", "education", "experience", "projects", "skills"])),
+  sectionOrder: z.array(sectionNameSchema),
   compactionActions: z.array(z.string()),
+  layout: z.object({
+    bodyFontSize: z.number().min(9),
+    spacingScale: z.number().min(0.8).max(1),
+    condensedSkills: z.boolean(),
+  }),
+  approvedWarningCodes: z.array(z.string()),
 });
+
+const stringArray = { type: "array", items: { type: "string" } } as const;
+export const resumeBulletJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "text",
+    "sourceFactIds",
+    "relevanceScore",
+    "isUserEdited",
+    "included",
+    "locked",
+    "approved",
+    "rejected",
+    "generationSource",
+    "generationReason",
+    "keywordsAddressed",
+    "selectionReason",
+  ],
+  properties: {
+    id: { type: "string" },
+    text: { type: "string" },
+    sourceFactIds: stringArray,
+    relevanceScore: { type: "number" },
+    isUserEdited: { type: "boolean" },
+    included: { type: "boolean" },
+    locked: { type: "boolean" },
+    approved: { type: "boolean" },
+    rejected: { type: "boolean" },
+    generationSource: { type: "string", enum: ["ai", "deterministic", "user"] },
+    generationReason: { type: "string" },
+    keywordsAddressed: stringArray,
+    selectionReason: { type: "string" },
+  },
+} as const;
+
+const itemSectionJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "careerItemId",
+    "title",
+    "organization",
+    "location",
+    "startDate",
+    "endDate",
+    "isCurrent",
+    "locked",
+    "bullets",
+  ],
+  properties: {
+    careerItemId: { type: "string" },
+    title: { type: "string" },
+    organization: { type: "string" },
+    location: { type: "string" },
+    startDate: { type: "string" },
+    endDate: { type: "string" },
+    isCurrent: { type: "boolean" },
+    locked: { type: "boolean" },
+    bullets: { type: "array", items: resumeBulletJsonSchema },
+  },
+} as const;
+
+export const tailoredResumeJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "header",
+    "summary",
+    "education",
+    "experience",
+    "projects",
+    "skills",
+    "sectionOrder",
+    "compactionActions",
+    "layout",
+    "approvedWarningCodes",
+  ],
+  properties: {
+    id: { type: "string" },
+    header: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "fullName",
+        "headline",
+        "location",
+        "email",
+        "phone",
+        "portfolioUrl",
+        "linkedInUrl",
+        "githubUrl",
+        "workAuthorizationNote",
+      ],
+      properties: {
+        fullName: { type: "string" },
+        headline: { type: "string" },
+        location: { type: "string" },
+        email: { type: "string" },
+        phone: { type: "string" },
+        portfolioUrl: { type: "string" },
+        linkedInUrl: { type: "string" },
+        githubUrl: { type: "string" },
+        workAuthorizationNote: { type: "string" },
+      },
+    },
+    summary: stringArray,
+    education: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["careerItemId", "title", "organization", "location", "dateLabel"],
+        properties: {
+          careerItemId: { type: "string" },
+          title: { type: "string" },
+          organization: { type: "string" },
+          location: { type: "string" },
+          dateLabel: { type: "string" },
+        },
+      },
+    },
+    experience: { type: "array", items: itemSectionJsonSchema },
+    projects: { type: "array", items: itemSectionJsonSchema },
+    skills: stringArray,
+    sectionOrder: {
+      type: "array",
+      items: { type: "string", enum: ["summary", "education", "experience", "projects", "skills"] },
+    },
+    compactionActions: stringArray,
+    layout: {
+      type: "object",
+      additionalProperties: false,
+      required: ["bodyFontSize", "spacingScale", "condensedSkills"],
+      properties: {
+        bodyFontSize: { type: "number" },
+        spacingScale: { type: "number" },
+        condensedSkills: { type: "boolean" },
+      },
+    },
+    approvedWarningCodes: stringArray,
+  },
+} as const;
+
+export const resumePlanJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "targetPositioning",
+    "selectedCareerItemIds",
+    "selectedFactIds",
+    "sectionOrder",
+    "emphasisAreas",
+    "deEmphasisAreas",
+    "omittedItems",
+    "skillSelection",
+    "contentBudget",
+  ],
+  properties: {
+    targetPositioning: { type: "string" },
+    selectedCareerItemIds: stringArray,
+    selectedFactIds: stringArray,
+    sectionOrder: {
+      type: "array",
+      items: { type: "string", enum: ["summary", "education", "experience", "projects", "skills"] },
+    },
+    emphasisAreas: stringArray,
+    deEmphasisAreas: stringArray,
+    omittedItems: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["careerItemId", "reason"],
+        properties: { careerItemId: { type: "string" }, reason: { type: "string" } },
+      },
+    },
+    skillSelection: stringArray,
+    contentBudget: {
+      type: "object",
+      additionalProperties: false,
+      required: ["maxBullets", "maxProjects", "includeSummary", "maxBulletsPerItem"],
+      properties: {
+        maxBullets: { type: "integer" },
+        maxProjects: { type: "integer" },
+        includeSummary: { type: "boolean" },
+        maxBulletsPerItem: { type: "integer" },
+      },
+    },
+  },
+} as const;

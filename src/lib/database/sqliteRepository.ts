@@ -1,19 +1,27 @@
 import type Database from "@tauri-apps/plugin-sql";
 import type {
   AppSettings,
+  ApprovedBulletVariant,
   BackupPayload,
   CareerFact,
   CareerItem,
   DashboardMetrics,
+  FactUsage,
   Job,
   Profile,
   ResumeVersion,
   Skill,
 } from "../../types/domain";
 import { createId, nowIso } from "../utils";
+import {
+  emptyGenerationMetadata,
+  normalizeGenerationMetadata,
+  normalizeTailoredResume,
+  normalizeValidationIssues,
+} from "../resume/normalize";
 import { migrations } from "./migrations";
 import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSkills } from "./seed";
-import type { AppRepository, CareerFactFilters } from "./repository";
+import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
 
 type TauriDatabase = Database;
 type Row = Record<string, unknown>;
@@ -35,6 +43,15 @@ function parseArray(value: unknown) {
     return Array.isArray(parsed) ? parsed.map(String) : [];
   } catch {
     return [];
+  }
+}
+
+function parseJson(value: unknown, fallback: unknown) {
+  if (typeof value !== "string" || !value) return fallback;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return fallback;
   }
 }
 
@@ -129,12 +146,38 @@ function mapResume(row: Row): ResumeVersion {
     jobId: asString(row.job_id),
     name: asString(row.name),
     templateId: asString(row.template_id),
-    contentJson: JSON.parse(asString(row.content_json)),
-    validationJson: JSON.parse(asString(row.validation_json)),
+    contentJson: normalizeTailoredResume(parseJson(row.content_json, {})),
+    validationJson: normalizeValidationIssues(parseJson(row.validation_json, [])),
     status: row.status as ResumeVersion["status"],
     lastExportPath: asString(row.last_export_path),
+    parentResumeVersionId: asString(row.parent_resume_version_id),
+    generationProvider:
+      (asString(row.generation_provider) || "deterministic") as ResumeVersion["generationProvider"],
+    generationModel: asString(row.generation_model),
+    promptVersion: asString(row.prompt_version),
+    generationMetadataJson: normalizeGenerationMetadata(
+      parseJson(row.generation_metadata_json, emptyGenerationMetadata),
+    ),
+    deterministicBaselineJson: row.deterministic_baseline_json
+      ? normalizeTailoredResume(parseJson(row.deterministic_baseline_json, {}))
+      : null,
     createdAt: asString(row.created_at),
     updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapApprovedVariant(row: Row): ApprovedBulletVariant {
+  return {
+    id: asString(row.id),
+    careerItemId: asString(row.career_item_id),
+    sourceFactIds: parseArray(row.source_fact_ids_json),
+    text: asString(row.text),
+    roleCategories: parseArray(row.role_categories_json),
+    skillTags: parseArray(row.skill_tags_json),
+    targetJobId: asString(row.target_job_id),
+    creationSource: row.creation_source as ApprovedBulletVariant["creationSource"],
+    approvedAt: asString(row.approved_at),
+    createdAt: asString(row.created_at),
   };
 }
 
@@ -394,6 +437,26 @@ export class SqliteRepository implements AppRepository {
     await this.db.execute("DELETE FROM career_facts WHERE id = $1", [id]);
   }
 
+  async bulkUpdateCareerFacts(
+    ids: string[],
+    changes: Partial<Pick<CareerFact, "enabled" | "evidenceStatus">>,
+  ) {
+    for (const id of ids) {
+      if (changes.enabled !== undefined) {
+        await this.db.execute(
+          "UPDATE career_facts SET enabled = $1, updated_at = $2 WHERE id = $3",
+          [changes.enabled ? 1 : 0, nowIso(), id],
+        );
+      }
+      if (changes.evidenceStatus !== undefined) {
+        await this.db.execute(
+          "UPDATE career_facts SET evidence_status = $1, updated_at = $2 WHERE id = $3",
+          [changes.evidenceStatus, nowIso(), id],
+        );
+      }
+    }
+  }
+
   async listSkills() {
     return (await this.db.select<Row[]>("SELECT * FROM skills ORDER BY category, name")).map(mapSkill);
   }
@@ -471,6 +534,11 @@ export class SqliteRepository implements AppRepository {
     return (await this.db.select<Row[]>("SELECT * FROM resume_versions ORDER BY created_at DESC")).map(mapResume);
   }
 
+  async getResumeVersion(id: string) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM resume_versions WHERE id = $1", [id]);
+    return rows[0] ? mapResume(rows[0]) : null;
+  }
+
   async saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">) {
     const existing = resume.id
       ? await this.db.select<Row[]>("SELECT * FROM resume_versions WHERE id = $1", [resume.id])
@@ -486,15 +554,33 @@ export class SqliteRepository implements AppRepository {
       validationJson: resume.validationJson ?? mapped?.validationJson ?? [],
       status: resume.status ?? mapped?.status ?? "draft",
       lastExportPath: resume.lastExportPath ?? mapped?.lastExportPath ?? "",
+      parentResumeVersionId: resume.parentResumeVersionId ?? mapped?.parentResumeVersionId ?? "",
+      generationProvider: resume.generationProvider ?? mapped?.generationProvider ?? "deterministic",
+      generationModel: resume.generationModel ?? mapped?.generationModel ?? "",
+      promptVersion: resume.promptVersion ?? mapped?.promptVersion ?? "",
+      generationMetadataJson:
+        resume.generationMetadataJson ?? mapped?.generationMetadataJson ?? emptyGenerationMetadata,
+      deterministicBaselineJson:
+        resume.deterministicBaselineJson ?? mapped?.deterministicBaselineJson ?? null,
       createdAt: mapped?.createdAt ?? now,
       updatedAt: now,
     };
     await this.db.execute(
-      `INSERT INTO resume_versions VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO resume_versions (
+        id, job_id, name, template_id, content_json, validation_json, status, last_export_path,
+        created_at, updated_at, parent_resume_version_id, generation_provider, generation_model,
+        prompt_version, generation_metadata_json, deterministic_baseline_json
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
        ON CONFLICT(id) DO UPDATE SET
         job_id = excluded.job_id, name = excluded.name, template_id = excluded.template_id,
         content_json = excluded.content_json, validation_json = excluded.validation_json,
         status = excluded.status, last_export_path = excluded.last_export_path,
+        parent_resume_version_id = excluded.parent_resume_version_id,
+        generation_provider = excluded.generation_provider,
+        generation_model = excluded.generation_model,
+        prompt_version = excluded.prompt_version,
+        generation_metadata_json = excluded.generation_metadata_json,
+        deterministic_baseline_json = excluded.deterministic_baseline_json,
         updated_at = excluded.updated_at`,
       [
         saved.id,
@@ -507,6 +593,12 @@ export class SqliteRepository implements AppRepository {
         saved.lastExportPath,
         saved.createdAt,
         saved.updatedAt,
+        saved.parentResumeVersionId,
+        saved.generationProvider,
+        saved.generationModel,
+        saved.promptVersion,
+        JSON.stringify(saved.generationMetadataJson),
+        saved.deterministicBaselineJson ? JSON.stringify(saved.deterministicBaselineJson) : null,
       ],
     );
     return saved;
@@ -514,6 +606,101 @@ export class SqliteRepository implements AppRepository {
 
   async deleteResumeVersion(id: string) {
     await this.db.execute("DELETE FROM resume_versions WHERE id = $1", [id]);
+  }
+
+  async listApprovedBulletVariants(filters: ApprovedVariantFilters = {}) {
+    const rows = (
+      await this.db.select<Row[]>(
+        filters.careerItemId
+          ? "SELECT * FROM approved_bullet_variants WHERE career_item_id = $1 ORDER BY approved_at DESC"
+          : "SELECT * FROM approved_bullet_variants ORDER BY approved_at DESC",
+        filters.careerItemId ? [filters.careerItemId] : [],
+      )
+    ).map(mapApprovedVariant);
+    const factIds = filters.factIds ? new Set(filters.factIds) : null;
+    const roles = filters.roleCategories
+      ? new Set(filters.roleCategories.map((role) => role.toLowerCase()))
+      : null;
+    return rows
+      .filter((variant) => !factIds || variant.sourceFactIds.every((factId) => factIds.has(factId)))
+      .filter(
+        (variant) =>
+          !roles ||
+          variant.roleCategories.length === 0 ||
+          variant.roleCategories.some((role) => roles.has(role.toLowerCase())),
+      );
+  }
+
+  async saveApprovedBulletVariant(
+    variant: Partial<ApprovedBulletVariant> &
+      Pick<ApprovedBulletVariant, "careerItemId" | "sourceFactIds" | "text">,
+  ) {
+    const now = nowIso();
+    const existing = variant.id
+      ? await this.db.select<Row[]>("SELECT * FROM approved_bullet_variants WHERE id = $1", [variant.id])
+      : [];
+    const mapped = existing[0] ? mapApprovedVariant(existing[0]) : undefined;
+    const saved: ApprovedBulletVariant = {
+      id: mapped?.id ?? variant.id ?? createId("approved-variant"),
+      careerItemId: variant.careerItemId,
+      sourceFactIds: variant.sourceFactIds,
+      text: variant.text,
+      roleCategories: variant.roleCategories ?? mapped?.roleCategories ?? [],
+      skillTags: variant.skillTags ?? mapped?.skillTags ?? [],
+      targetJobId: variant.targetJobId ?? mapped?.targetJobId ?? "",
+      creationSource: variant.creationSource ?? mapped?.creationSource ?? "user",
+      approvedAt: variant.approvedAt ?? mapped?.approvedAt ?? now,
+      createdAt: mapped?.createdAt ?? variant.createdAt ?? now,
+    };
+    await this.db.execute(
+      `INSERT INTO approved_bullet_variants (
+        id, career_item_id, source_fact_ids_json, text, role_categories_json, skill_tags_json,
+        target_job_id, creation_source, approved_at, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT(id) DO UPDATE SET
+        career_item_id = excluded.career_item_id,
+        source_fact_ids_json = excluded.source_fact_ids_json,
+        text = excluded.text,
+        role_categories_json = excluded.role_categories_json,
+        skill_tags_json = excluded.skill_tags_json,
+        target_job_id = excluded.target_job_id,
+        creation_source = excluded.creation_source,
+        approved_at = excluded.approved_at`,
+      [
+        saved.id,
+        saved.careerItemId,
+        JSON.stringify(saved.sourceFactIds),
+        saved.text,
+        JSON.stringify(saved.roleCategories),
+        JSON.stringify(saved.skillTags),
+        saved.targetJobId,
+        saved.creationSource,
+        saved.approvedAt,
+        saved.createdAt,
+      ],
+    );
+    return saved;
+  }
+
+  async deleteApprovedBulletVariant(id: string) {
+    await this.db.execute("DELETE FROM approved_bullet_variants WHERE id = $1", [id]);
+  }
+
+  async listFactUsage(factId: string): Promise<FactUsage[]> {
+    const resumes = await this.listResumeVersions();
+    return resumes.flatMap((resume) =>
+      [...resume.contentJson.projects, ...resume.contentJson.experience].flatMap((section) =>
+        section.bullets
+          .filter((bullet) => bullet.sourceFactIds.includes(factId))
+          .map((bullet) => ({
+            factId,
+            resumeVersionId: resume.id,
+            resumeName: resume.name,
+            bulletId: bullet.id,
+            bulletText: bullet.text,
+          })),
+      ),
+    );
   }
 
   async getDashboardMetrics(): Promise<DashboardMetrics> {
@@ -543,22 +730,30 @@ export class SqliteRepository implements AppRepository {
       modelName: asString(rows[0].model_name),
       defaultTemplateId: asString(rows[0].default_template_id),
       defaultExportDirectory: asString(rows[0].default_export_directory),
+      tailoringDefaults: {
+        ...defaultSettings.tailoringDefaults,
+        ...(parseJson(rows[0].tailoring_defaults_json, {}) as Partial<AppSettings["tailoringDefaults"]>),
+      },
     };
   }
 
   async saveSettings(settings: AppSettings) {
     await this.db.execute(
-      `INSERT INTO app_settings VALUES ('default', $1, $2, $3, $4)
+      `INSERT INTO app_settings (
+        id, ai_provider, model_name, default_template_id, default_export_directory, tailoring_defaults_json
+      ) VALUES ('default', $1, $2, $3, $4, $5)
        ON CONFLICT(id) DO UPDATE SET
         ai_provider = excluded.ai_provider,
         model_name = excluded.model_name,
         default_template_id = excluded.default_template_id,
-        default_export_directory = excluded.default_export_directory`,
+        default_export_directory = excluded.default_export_directory,
+        tailoring_defaults_json = excluded.tailoring_defaults_json`,
       [
         settings.aiProvider,
         settings.modelName,
         settings.defaultTemplateId,
         settings.defaultExportDirectory,
+        JSON.stringify(settings.tailoringDefaults),
       ],
     );
     return settings;
@@ -572,9 +767,10 @@ export class SqliteRepository implements AppRepository {
       skills: await this.listSkills(),
       jobs: await this.listJobs(),
       resumes: await this.listResumeVersions(),
+      approvedVariants: await this.listApprovedBulletVariants(),
       settings: await this.getSettings(),
       exportedAt: nowIso(),
-      schemaVersion: 1,
+      schemaVersion: 2,
     };
   }
 
@@ -594,6 +790,7 @@ export class SqliteRepository implements AppRepository {
     for (const skill of payload.skills) await this.saveSkill(skill);
     for (const job of payload.jobs) await this.saveJob(job);
     for (const resume of payload.resumes) await this.saveResumeVersion(resume);
+    for (const variant of payload.approvedVariants ?? []) await this.saveApprovedBulletVariant(variant);
     await this.saveSettings(payload.settings);
   }
 

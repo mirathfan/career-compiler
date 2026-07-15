@@ -35,10 +35,10 @@ describe("main tailoring workflow", () => {
     expect(await screen.findByText(/job analysis/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /score evidence/i }));
-    expect(await screen.findByText(/resume plan/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /generate resume/i }));
+    expect(await screen.findByText(/tailoring controls/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /generate tailored resume/i }));
 
-    await waitFor(() => expect(screen.getByText(/resume editor/i)).toBeInTheDocument());
-    expect(screen.getAllByText(/source facts:/i).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText(/generation review/i)).toBeInTheDocument());
+    expect(screen.getAllByText(/exact source facts/i).length).toBeGreaterThan(0);
   });
 });

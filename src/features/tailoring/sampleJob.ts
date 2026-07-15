@@ -1,6 +1,6 @@
 export const sampleJob = {
-  company: "Northstar AI",
-  roleTitle: "Full-Stack AI Software Engineer",
-  sourceUrl: "https://example.com/jobs/full-stack-ai-engineer",
-  rawDescription: `Northstar AI is hiring a Full-Stack AI Software Engineer to build production React and TypeScript experiences, Python APIs, PostgreSQL data models, and AI workflows grounded in retrieval, embeddings, structured outputs, and evaluation. The engineer will collaborate with product teams, ship customer-facing workflows, improve testing, and work with Docker-based development environments. Preferred experience includes LangGraph, OpenAI APIs, mobile products, Supabase or Firebase, and performance-minded engineering. Candidates may work from the United States with a preference for Chicago.`,
+  company: "Loop",
+  roleTitle: "2026 New Grad Software Engineer, Full-Stack",
+  sourceUrl: "",
+  rawDescription: `Development-only fixture for a 2026 new-grad full-stack software engineering role at Loop. Build end-to-end products with TypeScript and React, design and maintain APIs backed by PostgreSQL, write automated tests, and own production functionality. Work closely with product partners as requirements change. Strong candidates demonstrate production ownership, pragmatic full-stack judgment, reliable testing, and the ability to ship complete user-facing products.`,
 };

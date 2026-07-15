@@ -1,16 +1,36 @@
 # AI Pipeline
 
-Milestone 1 has two AI providers:
+CareerCompiler exposes one provider interface with two implementations:
 
-- `MockAIProvider`: deterministic, offline, and used by default.
-- `OpenAIProvider`: calls a Rust Tauri command that invokes the OpenAI Responses API.
+- `MockAIProvider` is deterministic, offline, and provides valid and intentionally invalid fixtures.
+- `OpenAIProvider` calls the OpenAI Responses API only through `run_openai_structured` in Rust.
 
-The browser never sends the API key directly. The Rust backend resolves the key from macOS Keychain or `OPENAI_API_KEY`, then requests Structured Outputs using the JSON schema corresponding to the Zod `JobAnalysis` contract.
+The provider supports job analysis, resume planning, tailored resume generation, validation repair, and grounded bullet shortening. The configured model is read from Settings for every call.
 
-After job analysis, evidence ranking is deterministic and local:
+## Allow-List Request
 
-1. Disabled and prohibited facts are excluded.
-2. Facts are scored for required skills, preferred skills, role tags, importance, metrics, evidence status, and item ordering.
-3. The resume plan selects the strongest facts and skills.
-4. The first resume generator composes concise bullets only from selected source facts.
-5. Local validation runs independently of AI output before export.
+`buildResumeGenerationRequest` creates the only candidate data the model may use. It includes target-job data, saved profile fields, selected career items, selected facts, approved skills, relevant approved variants, and explicit constraints. It excludes repository-only notes, disabled facts, disabled items, prohibited facts, user-excluded facts, and facts not selected by ranking or the user.
+
+The request is parsed with Zod before it reaches a provider. Strict JSON Schemas for analysis, planning, generation, repair, and shortening live under `src/schemas`.
+
+## OpenAI Boundary
+
+Rust resolves the key from macOS Keychain or the development environment and sends a Responses API request with strict `text.format` JSON Schema. The command returns only structured output text plus safe duration and token fields. It maps authentication, network, rate-limit, structured-response, and server failures to stable codes without returning full provider response bodies.
+
+The centralized prompt version is `careercompiler-resume-v2.0.0`. Prompts prohibit invented history, metrics, dates, technologies, organizations, and impact. They require source IDs and concise role-specific language.
+
+## Generation Flow
+
+1. Analyze the saved job description.
+2. Rank evidence deterministically and apply user selection.
+3. Ask the provider for a structured resume plan.
+4. Reject an out-of-bounds plan and use the local deterministic plan instead.
+5. Save a deterministic baseline for review and recovery.
+6. Ask the provider for a strict `TailoredResume`.
+7. Parse the schema and run local claim validation.
+8. If errors exist, send the invalid response, issues, and original allow-list through one repair request.
+9. Validate once more; remaining errors block approval and export.
+
+No automated test calls a live OpenAI endpoint. Rust tests cover request serialization, response parsing, usage metadata, error mapping, and secret redaction. TypeScript fixtures cover valid, unsupported-number, missing-source, invented-skill, repairable, and non-repairable generation.
+
+Safe persisted metadata contains provider, model, request type, success, duration, returned token counts, error code, repair state, fallback state, and compaction actions. It does not contain keys, prompts, response bodies, or unnecessary contact data.

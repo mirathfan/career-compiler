@@ -8,7 +8,7 @@ import { generateTailoredResume } from "./generateResume";
 describe("tailoring pipeline", () => {
   it("mock analysis is deterministic and schema-shaped", async () => {
     const provider = new MockAIProvider();
-    const analysis = await provider.analyzeJob({
+    const { data: analysis } = await provider.analyzeJob({
       company: "Acme",
       roleTitle: "AI Engineer",
       sourceUrl: "",
@@ -31,7 +31,7 @@ describe("tailoring pipeline", () => {
       statement: "Invented 400% improvement.",
     });
     const items = await repository.listCareerItems();
-    const analysis = await new MockAIProvider().analyzeJob({
+    const { data: analysis } = await new MockAIProvider().analyzeJob({
       company: "Acme",
       roleTitle: "AI Engineer",
       sourceUrl: "",
@@ -49,7 +49,7 @@ describe("tailoring pipeline", () => {
   it("creates a plan and generates bullets with source facts", async () => {
     const repository = new MemoryRepository();
     await repository.seedSampleData();
-    const analysis = await new MockAIProvider().analyzeJob({
+    const { data: analysis } = await new MockAIProvider().analyzeJob({
       company: "Acme",
       roleTitle: "Full-Stack AI Engineer",
       sourceUrl: "",

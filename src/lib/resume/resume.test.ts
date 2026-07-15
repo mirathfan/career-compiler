@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import { MemoryRepository } from "../database/memoryRepository";
 import { defaultResumeFilename, sanitizeFilenamePart } from "./filename";
+import { escapeLatex, renderResumeLatex } from "./latex";
 import { countPdfPages } from "./pdf";
 import { validateResumeClaims } from "./validation";
 import type { TailoredResume } from "../../types/domain";
@@ -18,6 +19,7 @@ function baseResume(): TailoredResume {
       portfolioUrl: "",
       linkedInUrl: "",
       githubUrl: "",
+      workAuthorizationNote: "",
     },
     summary: [],
     education: [],
@@ -26,11 +28,12 @@ function baseResume(): TailoredResume {
       {
         careerItemId: "project-comma-compression",
         title: "Comma Video Compression Challenge",
-        organization: "",
+        organization: "Independent challenge",
         location: "",
         startDate: "",
         endDate: "",
         isCurrent: false,
+        locked: false,
         bullets: [
           {
             id: "bullet-1",
@@ -39,6 +42,12 @@ function baseResume(): TailoredResume {
             relevanceScore: 40,
             isUserEdited: false,
             included: true,
+            locked: false,
+            approved: false,
+            rejected: false,
+            generationSource: "deterministic",
+            generationReason: "Metric match.",
+            keywordsAddressed: [],
             selectionReason: "Metric match.",
           },
         ],
@@ -47,6 +56,8 @@ function baseResume(): TailoredResume {
     skills: ["TypeScript"],
     sectionOrder: ["projects", "education", "skills"],
     compactionActions: [],
+    layout: { bodyFontSize: 9.5, spacingScale: 1, condensedSkills: false },
+    approvedWarningCodes: [],
   };
 }
 
@@ -56,6 +67,18 @@ describe("resume utilities", () => {
     expect(defaultResumeFilename("Acme Inc.", "AI Engineer")).toBe(
       "Mir_Athfan_Ali_Acme_Inc_AI_Engineer.pdf",
     );
+  });
+
+  it("builds escaped XeLaTeX source from resume data", () => {
+    const resume = baseResume();
+    resume.header.headline = "AI & Full-Stack_Engineer";
+    const source = renderResumeLatex(resume);
+    expect(escapeLatex("R&D_100% #1")).toBe("R\\&D\\_100\\% \\#1");
+    expect(source).toContain("\\documentclass[letterpaper,10pt]{article}");
+    expect(source).toContain("\\XeTeXgenerateactualtext=1");
+    expect(source).toContain("\\usepackage{fontspec}");
+    expect(source).toContain("AI \\& Full-Stack\\_Engineer");
+    expect(source).not.toContain("-no-shell-escape");
   });
 
   it("validates source facts and numeric claims", async () => {

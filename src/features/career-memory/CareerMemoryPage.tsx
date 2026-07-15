@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, CheckCheck, Plus, Save, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
-import { useRepository } from "../../lib/database/RepositoryProvider";
+import { useRepository } from "../../lib/database/repositoryContext";
 import { parseCsv } from "../../lib/utils";
+import { extractNumericTokens } from "../../lib/resume/validation";
 import type { CareerFact, CareerItem, CareerItemType, EvidenceStatus, Skill } from "../../types/domain";
 
 const itemTypes: CareerItemType[] = ["project", "employment", "education"];
@@ -165,10 +166,20 @@ function FactEditor({
   fact,
   onSave,
   onDelete,
+  selected,
+  onSelect,
+  duplicate,
+  usage,
+  variants,
 }: {
   fact: CareerFact;
   onSave: (fact: CareerFact) => void;
   onDelete: () => void;
+  selected: boolean;
+  onSelect: (selected: boolean) => void;
+  duplicate: boolean;
+  usage: Array<{ resumeName: string; bulletText: string }>;
+  variants: Array<{ text: string }>;
 }) {
   const [draft, setDraft] = useState({
     ...fact,
@@ -176,9 +187,25 @@ function FactEditor({
     roleTagsText: fact.roleTags.join(", "),
     metricTokensText: fact.metricTokens.join(", "),
   });
+  const exactTokens = extractNumericTokens(draft.statement);
+  const listedTokens = new Set(
+    parseCsv(draft.metricTokensText).flatMap((token) => extractNumericTokens(token)),
+  );
+  const unlistedTokens = exactTokens.filter((token) => !listedTokens.has(token));
 
   return (
     <div className="rounded-md border border-slate-200 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600">
+          <input type="checkbox" checked={selected} onChange={(event) => onSelect(event.target.checked)} />
+          Select for bulk action
+        </label>
+        <div className="flex gap-2 text-xs font-semibold">
+          {duplicate ? <span className="text-amber-700">Possible duplicate</span> : null}
+          <span className="text-slate-500">{usage.length} resume uses</span>
+          <span className="text-slate-500">{variants.length} approved variants</span>
+        </div>
+      </div>
       <textarea
         className="field min-h-20"
         value={draft.statement}
@@ -244,6 +271,27 @@ function FactEditor({
         placeholder="Source note"
         onChange={(event) => setDraft({ ...draft, sourceNote: event.target.value })}
       />
+      <div className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+        <p><strong>Exact numeric tokens:</strong> {exactTokens.length ? exactTokens.join(", ") : "None"}</p>
+        {unlistedTokens.length ? (
+          <p className="mt-1 font-semibold text-amber-700">
+            Add {unlistedTokens.join(", ")} to metric tokens before relying on these claims.
+          </p>
+        ) : null}
+      </div>
+      {usage.length || variants.length ? (
+        <details className="mt-3 text-xs text-slate-600">
+          <summary className="cursor-pointer font-semibold text-slate-700">Evidence history</summary>
+          <div className="mt-2 space-y-2">
+            {usage.map((entry, index) => (
+              <p key={`${entry.resumeName}-${index}`}><strong>{entry.resumeName}:</strong> {entry.bulletText}</p>
+            ))}
+            {variants.map((variant, index) => (
+              <p key={`${variant.text}-${index}`}><strong>Approved variant:</strong> {variant.text}</p>
+            ))}
+          </div>
+        </details>
+      ) : null}
       <button
         className="button mt-3"
         type="button"
@@ -280,12 +328,18 @@ export function CareerMemoryPage() {
   });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [selectedFactIds, setSelectedFactIds] = useState<string[]>([]);
   const itemsQuery = useQuery({ queryKey: ["career-items"], queryFn: () => repository.listCareerItems() });
   const factsQuery = useQuery({
     queryKey: ["career-facts", search, status],
     queryFn: () => repository.listCareerFacts({ search, evidenceStatus: status }),
   });
   const skillsQuery = useQuery({ queryKey: ["skills"], queryFn: () => repository.listSkills() });
+  const resumesQuery = useQuery({ queryKey: ["resumes"], queryFn: () => repository.listResumeVersions() });
+  const variantsQuery = useQuery({
+    queryKey: ["approved-variants"],
+    queryFn: () => repository.listApprovedBulletVariants(),
+  });
 
   const invalidate = () => queryClient.invalidateQueries();
   const seed = useMutation({ mutationFn: () => repository.seedSampleData(), onSuccess: invalidate });
@@ -293,11 +347,26 @@ export function CareerMemoryPage() {
   const deleteItem = useMutation({ mutationFn: (id: string) => repository.deleteCareerItem(id), onSuccess: invalidate });
   const saveFact = useMutation({ mutationFn: (fact: Parameters<typeof repository.saveCareerFact>[0]) => repository.saveCareerFact(fact), onSuccess: invalidate });
   const deleteFact = useMutation({ mutationFn: (id: string) => repository.deleteCareerFact(id), onSuccess: invalidate });
+  const bulkFacts = useMutation({
+    mutationFn: ({
+      ids,
+      changes,
+    }: {
+      ids: string[];
+      changes: Partial<Pick<CareerFact, "enabled" | "evidenceStatus">>;
+    }) => repository.bulkUpdateCareerFacts(ids, changes),
+    onSuccess: () => {
+      setSelectedFactIds([]);
+      invalidate();
+    },
+  });
   const saveSkill = useMutation({ mutationFn: (skill: Parameters<typeof repository.saveSkill>[0]) => repository.saveSkill(skill), onSuccess: invalidate });
   const reorder = useMutation({ mutationFn: (ids: string[]) => repository.updateCareerItemOrder(ids), onSuccess: invalidate });
   const items = itemsQuery.data ?? emptyItems;
   const facts = factsQuery.data ?? emptyFacts;
   const skills = skillsQuery.data ?? emptySkills;
+  const resumes = resumesQuery.data ?? [];
+  const variants = variantsQuery.data ?? [];
   const grouped = useMemo(
     () =>
       itemTypes.map((type) => ({
@@ -307,17 +376,44 @@ export function CareerMemoryPage() {
     [items],
   );
 
-  if (itemsQuery.isLoading || factsQuery.isLoading || skillsQuery.isLoading) {
+  if (
+    itemsQuery.isLoading ||
+    factsQuery.isLoading ||
+    skillsQuery.isLoading ||
+    resumesQuery.isLoading ||
+    variantsQuery.isLoading
+  ) {
     return <LoadingState label="Loading career memory..." />;
   }
   if (itemsQuery.isError) throw itemsQuery.error;
   if (factsQuery.isError) throw factsQuery.error;
   if (skillsQuery.isError) throw skillsQuery.error;
+  if (resumesQuery.isError) throw resumesQuery.error;
+  if (variantsQuery.isError) throw variantsQuery.error;
 
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
   const itemFacts = selected ? facts.filter((fact) => fact.careerItemId === selected.id) : [];
   const counts = new Map<string, number>();
   for (const fact of facts) counts.set(fact.careerItemId, (counts.get(fact.careerItemId) ?? 0) + 1);
+  const normalizeStatement = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const statementCounts = new Map<string, number>();
+  for (const fact of facts) {
+    const normalized = normalizeStatement(fact.statement);
+    statementCounts.set(normalized, (statementCounts.get(normalized) ?? 0) + 1);
+  }
+  const usageByFact = new Map<string, Array<{ resumeName: string; bulletText: string }>>();
+  for (const resume of resumes) {
+    for (const bullet of [...resume.contentJson.projects, ...resume.contentJson.experience].flatMap(
+      (section) => section.bullets,
+    )) {
+      for (const factId of bullet.sourceFactIds) {
+        usageByFact.set(factId, [
+          ...(usageByFact.get(factId) ?? []),
+          { resumeName: resume.name, bulletText: bullet.text },
+        ]);
+      }
+    }
+  }
 
   const moveItem = (item: CareerItem, direction: -1 | 1) => {
     const ordered = [...items];
@@ -504,12 +600,68 @@ export function CareerMemoryPage() {
               </div>
 
               <div className="space-y-3">
+                {itemFacts.length ? (
+                  <div className="panel flex flex-wrap items-center gap-2 p-3">
+                    <span className="mr-auto text-sm font-semibold text-slate-700">
+                      {selectedFactIds.length} selected
+                    </span>
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() =>
+                        setSelectedFactIds(
+                          selectedFactIds.length === itemFacts.length ? [] : itemFacts.map((fact) => fact.id),
+                        )
+                      }
+                    >
+                      Select all
+                    </button>
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={!selectedFactIds.length}
+                      onClick={() =>
+                        bulkFacts.mutate({ ids: selectedFactIds, changes: { evidenceStatus: "verified" } })
+                      }
+                    >
+                      <CheckCheck size={15} aria-hidden="true" />
+                      Mark verified
+                    </button>
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={!selectedFactIds.length}
+                      onClick={() => bulkFacts.mutate({ ids: selectedFactIds, changes: { enabled: true } })}
+                    >
+                      <ToggleRight size={15} aria-hidden="true" />
+                      Enable
+                    </button>
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={!selectedFactIds.length}
+                      onClick={() => bulkFacts.mutate({ ids: selectedFactIds, changes: { enabled: false } })}
+                    >
+                      <ToggleLeft size={15} aria-hidden="true" />
+                      Disable
+                    </button>
+                  </div>
+                ) : null}
                 {itemFacts.map((fact) => (
                   <FactEditor
                     key={fact.id}
                     fact={fact}
                     onSave={(next) => saveFact.mutate(next)}
                     onDelete={() => deleteFact.mutate(fact.id)}
+                    selected={selectedFactIds.includes(fact.id)}
+                    onSelect={(checked) =>
+                      setSelectedFactIds((current) =>
+                        checked ? [...new Set([...current, fact.id])] : current.filter((id) => id !== fact.id),
+                      )
+                    }
+                    duplicate={(statementCounts.get(normalizeStatement(fact.statement)) ?? 0) > 1}
+                    usage={usageByFact.get(fact.id) ?? []}
+                    variants={variants.filter((variant) => variant.sourceFactIds.includes(fact.id))}
                   />
                 ))}
               </div>

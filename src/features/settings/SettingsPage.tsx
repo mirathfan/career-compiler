@@ -5,9 +5,10 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Download, KeyRound, Trash2, Upload } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { InlineError, LoadingState } from "../../components/States";
-import { useRepository } from "../../lib/database/RepositoryProvider";
+import { useRepository } from "../../lib/database/repositoryContext";
 import { AI_CONFIG } from "../../lib/ai/config";
 import type { AppSettings, BackupPayload, Profile } from "../../types/domain";
+import { parseCsv } from "../../lib/utils";
 
 interface KeyStatus {
   exists: boolean;
@@ -52,6 +53,9 @@ export function SettingsPage() {
   };
   const updateSettings = (patch: Partial<AppSettings>) => {
     saveSettings.mutate({ ...settings, ...patch });
+  };
+  const updateTailoringDefaults = (patch: Partial<AppSettings["tailoringDefaults"]>) => {
+    updateSettings({ tailoringDefaults: { ...settings.tailoringDefaults, ...patch } });
   };
   const refreshKeyStatus = async () => {
     const status = await invoke<KeyStatus>("get_openai_key_status");
@@ -124,11 +128,14 @@ export function SettingsPage() {
               </label>
               <label className="text-sm font-semibold text-slate-700">
                 Default template
-                <input
+                <select
                   className="field mt-1"
                   value={settings.defaultTemplateId}
                   onChange={(event) => updateSettings({ defaultTemplateId: event.target.value })}
-                />
+                >
+                  <option value="mir-standard">Mir Standard</option>
+                  <option value="ai-full-stack">AI and Full-Stack</option>
+                </select>
               </label>
               <label className="text-sm font-semibold text-slate-700">
                 Default export directory
@@ -138,6 +145,47 @@ export function SettingsPage() {
                   onChange={(event) => updateSettings({ defaultExportDirectory: event.target.value })}
                 />
               </label>
+            </div>
+            <div className="mt-5 border-t border-slate-200 pt-5">
+              <h4 className="font-semibold text-slate-900">Tailoring defaults</h4>
+              <div className="mt-3 grid grid-cols-3 gap-3">
+                <label className="text-sm font-semibold text-slate-700">
+                  Summary
+                  <select className="field mt-1" value={settings.tailoringDefaults.summaryMode} onChange={(event) => updateTailoringDefaults({ summaryMode: event.target.value as AppSettings["tailoringDefaults"]["summaryMode"] })}>
+                    <option value="auto">Auto</option><option value="always">Always</option><option value="never">Never</option>
+                  </select>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Projects
+                  <select className="field mt-1" value={settings.tailoringDefaults.projectCount} onChange={(event) => updateTailoringDefaults({ projectCount: event.target.value === "auto" ? "auto" : Number(event.target.value) as 2 | 3 | 4 })}>
+                    <option value="auto">Auto</option><option value="2">2</option><option value="3">3</option><option value="4">4</option>
+                  </select>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Bullets/item
+                  <select className="field mt-1" value={settings.tailoringDefaults.bulletsPerProject} onChange={(event) => updateTailoringDefaults({ bulletsPerProject: event.target.value === "auto" ? "auto" : Number(event.target.value) as 1 | 2 | 3 })}>
+                    <option value="auto">Auto</option><option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                  </select>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Section order
+                  <select className="field mt-1" value={settings.tailoringDefaults.sectionOrderPreset} onChange={(event) => updateTailoringDefaults({ sectionOrderPreset: event.target.value as AppSettings["tailoringDefaults"]["sectionOrderPreset"] })}>
+                    <option value="mir-standard">Mir Standard</option><option value="ai-full-stack">AI and Full-Stack</option><option value="experience-first">Experience first</option>
+                  </select>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Target role category
+                  <input className="field mt-1" value={settings.tailoringDefaults.targetRoleCategory} onChange={(event) => updateTailoringDefaults({ targetRoleCategory: event.target.value })} />
+                </label>
+                <label className="flex items-center gap-2 self-end pb-2 text-sm font-semibold text-slate-700">
+                  <input type="checkbox" checked={settings.tailoringDefaults.strictOnePage} onChange={(event) => updateTailoringDefaults({ strictOnePage: event.target.checked })} />
+                  Strict one page
+                </label>
+                <label className="col-span-3 text-sm font-semibold text-slate-700">
+                  Default emphasis tags
+                  <input className="field mt-1" value={settings.tailoringDefaults.emphasisTags.join(", ")} onChange={(event) => updateTailoringDefaults({ emphasisTags: parseCsv(event.target.value) })} />
+                </label>
+              </div>
             </div>
           </div>
         </section>

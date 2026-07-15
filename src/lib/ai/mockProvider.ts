@@ -1,25 +1,106 @@
-import type { JobAnalysis } from "../../types/domain";
-import type { AIProvider, AnalyzeJobInput } from "./provider";
+import type {
+  AIProviderResult,
+  AIRequestMetadata,
+  AIRequestType,
+  JobAnalysis,
+  ResumePlan,
+  TailoredResume,
+} from "../../types/domain";
+import { createResumePlanFromRequest } from "../tailoring/plan";
+import { generateResumeFromAllowedEvidence } from "../tailoring/generateFromRequest";
+import type {
+  AIProvider,
+  AnalyzeJobInput,
+  GenerateResumeInput,
+  PlanResumeInput,
+  RepairResumeInput,
+  ShortenBulletInput,
+} from "./provider";
+
+export type MockGenerationFixture =
+  | "valid"
+  | "unsupported_number"
+  | "missing_source_fact"
+  | "invented_skill"
+  | "repairable_invalid"
+  | "non_repairable_invalid";
 
 function includes(text: string, value: string) {
-  return text.toLowerCase().includes(value.toLowerCase());
+  const normalizedValue = value.toLowerCase();
+  if (/^[a-z0-9]+$/.test(normalizedValue) && normalizedValue.length <= 3) {
+    const escaped = normalizedValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[^a-z0-9])${escaped}(?=$|[^a-z0-9])`, "i").test(text);
+  }
+  return text.toLowerCase().includes(normalizedValue);
+}
+
+function metadata(requestType: AIRequestType, model: string, durationMs = 0): AIRequestMetadata {
+  return {
+    provider: "mock",
+    model,
+    requestType,
+    success: true,
+    durationMs,
+    inputTokens: null,
+    outputTokens: null,
+    totalTokens: null,
+    errorCode: "",
+  };
+}
+
+function result<T>(data: T, requestType: AIRequestType, model: string): AIProviderResult<T> {
+  return { data, metadata: metadata(requestType, model) };
+}
+
+function firstBullet(resume: TailoredResume) {
+  return [...resume.projects, ...resume.experience].flatMap((section) => section.bullets)[0];
+}
+
+function applyFixture(resume: TailoredResume, fixture: MockGenerationFixture) {
+  const next = structuredClone(resume);
+  const bullet = firstBullet(next);
+  if ((fixture === "unsupported_number" || fixture === "repairable_invalid" || fixture === "non_repairable_invalid") && bullet) {
+    bullet.text = `${bullet.text.replace(/\.$/, "")} and improved throughput by 99%.`;
+  }
+  if (fixture === "missing_source_fact" && bullet) {
+    bullet.sourceFactIds = ["missing-source-fact"];
+  }
+  if (fixture === "invented_skill") {
+    next.skills.push("Kubernetes");
+  }
+  return next;
 }
 
 export class MockAIProvider implements AIProvider {
-  async analyzeJob(input: AnalyzeJobInput): Promise<JobAnalysis> {
+  readonly mode = "mock" as const;
+  private readonly fixture: MockGenerationFixture;
+
+  constructor(fixture: MockGenerationFixture = "valid") {
+    this.fixture = fixture;
+  }
+
+  async analyzeJob(input: AnalyzeJobInput): Promise<AIProviderResult<JobAnalysis>> {
     const text = input.rawDescription;
+    const isLoopFixture = input.company.toLowerCase() === "loop";
     const requiredSkills = [
       "TypeScript",
       "React",
+      "REST APIs",
+      "PostgreSQL",
+      "Testing",
       "Python",
       "FastAPI",
-      "PostgreSQL",
       "OpenAI APIs",
       "Embeddings",
       "React Native",
       "Docker",
-      "Testing",
-    ].filter((skill) => includes(text, skill) || ["TypeScript", "React", "Python"].includes(skill));
+    ].filter(
+      (skill) =>
+        includes(text, skill) ||
+        (skill === "REST APIs" && includes(text, "APIs")) ||
+        (isLoopFixture && ["TypeScript", "React", "REST APIs", "PostgreSQL", "Testing"].includes(skill)) ||
+        ["TypeScript", "React"].includes(skill),
+    );
 
     const preferredSkills = [
       "LangGraph",
@@ -30,40 +111,91 @@ export class MockAIProvider implements AIProvider {
       "Zod",
       "TanStack Query",
       "LLM evaluation",
-    ].filter((skill) => includes(text, skill) || ["LangGraph", "LLM evaluation"].includes(skill));
-
+    ].filter((skill) => includes(text, skill) || (!isLoopFixture && ["LangGraph", "LLM evaluation"].includes(skill)));
     const roleCategories = [
       includes(text, "mobile") ? "mobile engineer" : "",
       includes(text, "ai") || includes(text, "llm") ? "AI engineer" : "",
       includes(text, "full-stack") || includes(text, "full stack") ? "full-stack engineer" : "",
-      includes(text, "client") || includes(text, "customer") ? "forward deployed engineer" : "",
+      includes(text, "client") || includes(text, "customer") ? "client-facing engineer" : "",
     ].filter(Boolean);
 
-    return {
-      inferredCompany: input.company || "Sample Company",
-      inferredRoleTitle: input.roleTitle || "Full-Stack AI Software Engineer",
-      seniority: includes(text, "senior") ? "Senior" : "Early-career to mid-level",
-      roleCategories: roleCategories.length ? roleCategories : ["full-stack engineer", "AI engineer"],
-      requiredSkills,
-      preferredSkills,
-      responsibilities: [
-        "Build product-quality user experiences",
-        "Develop backend APIs and durable data models",
-        "Ground AI output in reliable evaluation and retrieval systems",
-        "Collaborate with stakeholders and adapt to changing requirements",
-      ],
-      domainKeywords: ["AI", "full-stack", "product engineering", "local-first", "evaluation"],
-      candidateSignals: [
-        "Ships complete products",
-        "Understands AI retrieval and evaluation",
-        "Combines frontend, mobile, backend, and database work",
-      ],
-      locationRequirements: includes(text, "Chicago") ? ["Chicago"] : ["United States"],
-      workAuthorizationLanguage: includes(text, "authorization")
-        ? "Job description mentions work authorization."
-        : "",
-      summary:
-        "The role values a product-minded software engineer who can build full-stack systems and ground AI features in reliable evidence.",
+    return result(
+      {
+        inferredCompany: input.company || "Sample Company",
+        inferredRoleTitle: input.roleTitle || "Full-Stack Software Engineer",
+        seniority: includes(text, "new grad") ? "New graduate" : includes(text, "senior") ? "Senior" : "Early-career",
+        roleCategories: isLoopFixture
+          ? ["full-stack engineer"]
+          : roleCategories.length
+            ? roleCategories
+            : ["full-stack engineer"],
+        requiredSkills,
+        preferredSkills,
+        responsibilities: isLoopFixture
+          ? [
+              "Build end-to-end products",
+              "Own production functionality",
+              "Write reliable automated tests",
+              "Work effectively with changing requirements",
+            ]
+          : [
+              "Build product-quality user experiences",
+              "Develop backend APIs and durable data models",
+              "Ground AI output in reliable evaluation and retrieval systems",
+              "Collaborate with stakeholders and adapt to changing requirements",
+            ],
+        domainKeywords: isLoopFixture
+          ? ["full-stack", "product engineering", "production ownership", "testing"]
+          : ["AI", "full-stack", "product engineering", "evaluation"],
+        candidateSignals: [
+          "Ships complete products",
+          "Owns functionality end to end",
+          "Adapts to changing requirements",
+        ],
+        locationRequirements: includes(text, "Chicago") ? ["Chicago"] : [],
+        workAuthorizationLanguage: includes(text, "authorization")
+          ? "Job description mentions work authorization."
+          : "",
+        summary: isLoopFixture
+          ? "The role values an early-career full-stack engineer who ships tested TypeScript and React products, owns APIs and data, and adapts as requirements change."
+          : "The role values a product-minded software engineer who can build reliable full-stack systems.",
+      },
+      "job_analysis",
+      input.modelName,
+    );
+  }
+
+  async planResume(input: PlanResumeInput): Promise<AIProviderResult<ResumePlan>> {
+    const plan = createResumePlanFromRequest(input.request);
+    const priority = ["project-forge", "project-aura", "project-client-bookstore"];
+    const itemRank = (id: string) => {
+      const index = priority.indexOf(id);
+      return index === -1 ? priority.length + 1 : index;
     };
+    plan.selectedFactIds.sort((a, b) => {
+      const left = input.request.selectedFacts.find((fact) => fact.factId === a)?.careerItemId ?? "";
+      const right = input.request.selectedFacts.find((fact) => fact.factId === b)?.careerItemId ?? "";
+      return itemRank(left) - itemRank(right);
+    });
+    plan.selectedCareerItemIds.sort((a, b) => itemRank(a) - itemRank(b));
+    plan.contentBudget.includeSummary = input.request.constraints.summaryMode === "always";
+    return result(plan, "resume_plan", input.modelName);
+  }
+
+  async generateResume(input: GenerateResumeInput): Promise<AIProviderResult<TailoredResume>> {
+    const resume = generateResumeFromAllowedEvidence(input.request, input.plan, "ai");
+    return result(applyFixture(resume, this.fixture), "resume_generation", input.modelName);
+  }
+
+  async repairResume(input: RepairResumeInput): Promise<AIProviderResult<TailoredResume>> {
+    const resume = generateResumeFromAllowedEvidence(input.request, input.plan, "ai");
+    const repaired = this.fixture === "non_repairable_invalid"
+      ? applyFixture(resume, "non_repairable_invalid")
+      : resume;
+    return result(repaired, "validation_repair", input.modelName);
+  }
+
+  async shortenBullet(input: ShortenBulletInput) {
+    return result({ ...input.bullet }, "bullet_shortening", input.modelName);
   }
 }

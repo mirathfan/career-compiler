@@ -125,6 +125,12 @@ export function splitEvidence(scores: EvidenceScore[], overrides: Record<string,
   const sorted = [...scores].sort((a, b) => b.score - a.score);
   return sorted.map((score) => {
     if (score.fact.id in overrides) {
+      const isBlockingExclusion =
+        !score.fact.enabled ||
+        !score.item.enabled ||
+        score.fact.evidenceStatus === "prohibited" ||
+        score.item.id === "missing";
+      if (isBlockingExclusion) return score;
       return {
         ...score,
         selected: overrides[score.fact.id],

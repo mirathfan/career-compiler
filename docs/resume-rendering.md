@@ -1,18 +1,30 @@
 # Resume Rendering
 
-The first template is ATS-safe, US Letter, one column, no icons, no skill bars, and no core-content tables.
+CareerCompiler renders resumes with XeLaTeX. Both `Mir Standard` and `AI and Full-Stack` use one compact visual system; the presets change content order and summary behavior rather than decoration.
 
-Rendering flow:
+## Rendering Flow
 
-1. The editor stores resume JSON with sections, bullets, and `sourceFactIds`.
-2. Validation checks source facts, prohibited facts, numeric tokens, percentages, and skill references.
-3. `@react-pdf/renderer` creates a deterministic PDF using built-in Helvetica fonts.
-4. `pdf-lib` checks the actual page count.
-5. Export is blocked unless validation has no errors and the generated PDF is one page.
+1. `TailoredResume` stores the approved sections, bullets, links, and layout values.
+2. `renderResumeLatex` escapes every user or model value and builds a fixed Letter-size document.
+3. React invokes the Rust `render_resume_latex` command.
+4. Rust finds XeLaTeX, writes `resume.tex` to a unique temporary directory, and compiles with `-no-shell-escape`, `-halt-on-error`, and noninteractive mode.
+5. Rust reads the PDF and deletes the `.tex`, log, auxiliary files, and temporary directory.
+6. `pdf-lib` verifies the actual page count before the native save dialog writes the file.
 
-Compaction is deterministic:
+The template is one column with Helvetica Neue, textual links, no graphics, no icons, no skill bars, and no content tables. XeTeX ActualText preserves ordinary extracted characters behind shaped glyphs. Automatic hyphenation is disabled to avoid synthetic ATS tokens.
 
-1. Remove optional summary.
-2. Remove lowest-scoring optional bullets.
-3. Condense skills.
-4. Keep unresolved overflow visible to the user rather than silently exporting two pages.
+## One-Page Fitting
+
+Compaction is deterministic and records every action:
+
+1. Remove an optional summary.
+2. Remove one lowest-relevance unlocked optional bullet.
+3. Condense skill formatting.
+4. Reduce spacing no lower than `0.8`.
+5. Reduce body text no lower than `9pt`.
+6. In OpenAI mode only, request a shorter version of one unlocked AI bullet using the same source IDs.
+7. Stop and request a manual edit if content still does not fit.
+
+Compaction never removes locked content, changes dates, deletes contact data, shrinks below the readable minimum, or automatically truncates prose. Undo restores the pre-compaction review state. Export blocks on any validation error, unapproved included bullet, LaTeX failure, or page count other than exactly one.
+
+The sample artifact is generated at `output/pdf/Mir_Athfan_Ali_Loop_2026_New_Grad_Software_Engineer_Full_Stack.pdf`. Poppler is used during development to verify page size, extracted text, annotations, and the final rasterized layout.
