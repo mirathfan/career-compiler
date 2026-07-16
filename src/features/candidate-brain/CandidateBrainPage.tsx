@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Archive, Check, Lock, Plus, Save, Trash2, Unlock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
@@ -53,6 +53,7 @@ const longFormQuestionTypes: ApplicationQuestionType[] = [
 ];
 
 function textValue(value: unknown) {
+  if (value == null) return "";
   return typeof value === "string" ? value : JSON.stringify(value ?? "");
 }
 
@@ -136,12 +137,29 @@ function SensitiveVault({
   answers: SensitiveAnswer[];
   onSave: (answer: Partial<SensitiveAnswer> & Pick<SensitiveAnswer, "key" | "label" | "value">) => void;
 }) {
+  const [drafts, setDrafts] = useState<Partial<Record<SensitiveAnswerKey, string>>>({});
+
+  useEffect(() => {
+    setDrafts((current) => {
+      const next = { ...current };
+      for (const field of sensitiveFields) {
+        const saved = answers.find((answer) => answer.key === field.key);
+        if (!(field.key in next) || saved?.locked) {
+          next[field.key] = textValue(saved?.value);
+        }
+      }
+      return next;
+    });
+  }, [answers]);
+
   return (
     <section className="panel p-4">
       <h3 className="text-base font-semibold text-slate-950">Sensitive Answer Vault</h3>
       <div className="mt-3 grid grid-cols-2 gap-3">
         {sensitiveFields.map((field) => {
           const saved = answers.find((answer) => answer.key === field.key);
+          const savedValue = textValue(saved?.value);
+          const draftValue = drafts[field.key] ?? savedValue;
           return (
             <div key={field.key} className="rounded-md border border-slate-200 p-3">
               <div className="flex items-center justify-between gap-3">
@@ -149,11 +167,15 @@ function SensitiveVault({
                 <span className={saved?.locked ? "text-emerald-700" : "text-amber-700"}>{saved?.locked ? <Lock size={15} /> : <Unlock size={15} />}</span>
               </div>
               <textarea
-                className="field mt-2 min-h-16"
-                defaultValue={textValue(saved?.value)}
+                aria-label={field.label}
+                className={["field mt-2 min-h-16", saved?.locked ? "bg-slate-50 text-slate-600" : ""].join(" ")}
+                value={draftValue}
                 placeholder="Requires user input until explicitly saved."
+                readOnly={Boolean(saved?.locked)}
+                title={saved?.locked ? "Unlock before editing" : undefined}
+                onChange={(event) => setDrafts((current) => ({ ...current, [field.key]: event.target.value }))}
                 onBlur={(event) => {
-                  if (event.target.value !== textValue(saved?.value)) {
+                  if (event.target.value !== savedValue) {
                     onSave({
                       ...saved,
                       key: field.key,
@@ -166,7 +188,21 @@ function SensitiveVault({
                 }}
               />
               <div className="mt-2 flex items-center gap-2">
-                <button className="button" type="button" onClick={() => onSave({ ...saved, key: field.key, label: field.label, value: saved?.value ?? "", locked: !saved?.locked, requiresReview: false })}>
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() =>
+                    onSave({
+                      ...saved,
+                      key: field.key,
+                      label: field.label,
+                      value: saved?.locked ? saved?.value ?? draftValue : draftValue,
+                      verificationStatus: saved?.verificationStatus ?? "user_confirmed",
+                      locked: !saved?.locked,
+                      requiresReview: false,
+                    })
+                  }
+                >
                   {saved?.locked ? <Unlock size={14} aria-hidden="true" /> : <Lock size={14} aria-hidden="true" />}
                   {saved?.locked ? "Unlock" : "Lock"}
                 </button>

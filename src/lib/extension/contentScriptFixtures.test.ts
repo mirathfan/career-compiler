@@ -144,4 +144,26 @@ describe("extension content script fixtures", () => {
     expect(submitClicks).toBe(0);
     expect(submitEvents).toBe(0);
   });
+
+  it("uses parent question text for Lever-style radio groups", () => {
+    const send = loadContentScript(
+      `<!doctype html><html><body><form>
+        <li class="application-question custom-question">
+          <div>Are you legally authorized to work in the United States? <span>*</span>
+            <div class="application-field full-width required-field">
+              <ul>
+                <li><label><input type="radio" name="cards[abc][field0]" value="Yes" required />Yes</label></li>
+                <li><label><input type="radio" name="cards[abc][field0]" value="No" required />No</label></li>
+              </ul>
+            </div>
+          </div>
+        </li>
+      </form></body></html>`,
+      "/lever/radio/apply",
+    );
+    const scan = send({ type: "CC_SCAN_FORM" });
+    const field = scan.fields?.find((candidate) => candidate.detectedFieldType === "radio_group");
+    expect(field?.label).toContain("legally authorized");
+    expect(field?.normalizedQuestionType).toBe("work_authorization");
+  });
 });

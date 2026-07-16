@@ -172,6 +172,41 @@ describe("database repository", () => {
     expect((await repository.listCareerItems()).some((item) => item.title === "Intake Test Project")).toBe(false);
   });
 
+  it("blocks locked Candidate Brain value changes until unlocked", async () => {
+    const repository = new MemoryRepository();
+    const sensitive = await repository.saveSensitiveAnswer({
+      key: "future_sponsorship",
+      label: "Future sponsorship requirement",
+      value: "No",
+      locked: true,
+      requiresReview: false,
+    });
+    await expect(
+      repository.saveSensitiveAnswer({
+        ...sensitive,
+        value: "Yes",
+      }),
+    ).rejects.toThrow(/must be unlocked/);
+    expect((await repository.listSensitiveAnswers()).find((answer) => answer.id === sensitive.id)?.value).toBe("No");
+
+    const unlocked = await repository.saveSensitiveAnswer({ ...sensitive, locked: false });
+    await repository.saveSensitiveAnswer({ ...unlocked, value: "Yes", requiresReview: true });
+    expect((await repository.listSensitiveAnswers()).find((answer) => answer.id === sensitive.id)?.value).toBe("Yes");
+
+    const claim = await repository.saveCandidateClaim({
+      category: "work_authorization",
+      value: "US work authorization confirmed",
+      locked: true,
+    });
+    await expect(
+      repository.saveCandidateClaim({
+        ...claim,
+        value: "Different claim",
+      }),
+    ).rejects.toThrow(/must be unlocked/);
+    await expect(repository.deleteCandidateClaim(claim.id)).rejects.toThrow(/must be unlocked/);
+  });
+
   it("supports career fact CRUD", async () => {
     const repository = new MemoryRepository();
     await repository.seedSampleData();

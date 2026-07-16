@@ -168,11 +168,17 @@ async function findOrCreateApplication(repository: AppRepository, job: Job, cont
 
 function normalizeExtensionField(field: ExtensionDetectedField) {
   const normalized = normalizeDetectedField(field);
+  const useExtensionClassification =
+    Boolean(field.normalizedQuestionType) && field.normalizedQuestionType !== "unknown";
   return {
     ...normalized,
     id: field.id || normalized.id,
-    normalizedQuestionType: field.normalizedQuestionType ?? normalized.normalizedQuestionType,
-    classificationConfidence: field.classificationConfidence ?? normalized.classificationConfidence,
+    normalizedQuestionType: useExtensionClassification
+      ? field.normalizedQuestionType ?? normalized.normalizedQuestionType
+      : normalized.normalizedQuestionType,
+    classificationConfidence: useExtensionClassification
+      ? field.classificationConfidence ?? normalized.classificationConfidence
+      : normalized.classificationConfidence,
   };
 }
 

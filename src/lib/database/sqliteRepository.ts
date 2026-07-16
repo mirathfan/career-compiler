@@ -87,6 +87,10 @@ function jsonText(value: unknown) {
   return JSON.stringify(value ?? null);
 }
 
+function valueJson(value: unknown) {
+  return JSON.stringify(value ?? null);
+}
+
 function defaultCandidatePreferences(existing?: Partial<CandidatePreferences> | null): CandidatePreferences {
   const now = nowIso();
   return {
@@ -938,6 +942,9 @@ export class SqliteRepository implements AppRepository {
       ? await this.db.select<Row[]>("SELECT * FROM candidate_claims WHERE id = $1", [claim.id])
       : [];
     const mapped = existing[0] ? mapCandidateClaim(existing[0]) : undefined;
+    if (mapped?.locked && (mapped.category !== claim.category || valueJson(mapped.value) !== valueJson(claim.value))) {
+      throw new Error("Locked candidate claims must be unlocked before their category or value can be changed.");
+    }
     const now = nowIso();
     const saved: CandidateClaim = {
       id: mapped?.id ?? claim.id ?? createId("candidate-claim"),
@@ -975,6 +982,9 @@ export class SqliteRepository implements AppRepository {
   }
 
   async deleteCandidateClaim(id: string) {
+    const existing = await this.db.select<Row[]>("SELECT * FROM candidate_claims WHERE id = $1", [id]);
+    const mapped = existing[0] ? mapCandidateClaim(existing[0]) : undefined;
+    if (mapped?.locked) throw new Error("Locked candidate claims must be unlocked before they can be deleted.");
     await this.db.execute("DELETE FROM candidate_claims WHERE id = $1", [id]);
   }
 
@@ -989,6 +999,9 @@ export class SqliteRepository implements AppRepository {
       ? await this.db.select<Row[]>("SELECT * FROM sensitive_answers WHERE id = $1", [answer.id])
       : await this.db.select<Row[]>("SELECT * FROM sensitive_answers WHERE answer_key = $1", [answer.key]);
     const mapped = existing[0] ? mapSensitiveAnswer(existing[0]) : undefined;
+    if (mapped?.locked && valueJson(mapped.value) !== valueJson(answer.value)) {
+      throw new Error("Locked sensitive answers must be unlocked before their value can be changed.");
+    }
     const now = nowIso();
     const saved: SensitiveAnswer = {
       id: mapped?.id ?? answer.id ?? createId("sensitive-answer"),
@@ -1028,6 +1041,9 @@ export class SqliteRepository implements AppRepository {
   }
 
   async deleteSensitiveAnswer(id: string) {
+    const existing = await this.db.select<Row[]>("SELECT * FROM sensitive_answers WHERE id = $1", [id]);
+    const mapped = existing[0] ? mapSensitiveAnswer(existing[0]) : undefined;
+    if (mapped?.locked) throw new Error("Locked sensitive answers must be unlocked before they can be deleted.");
     await this.db.execute("DELETE FROM sensitive_answers WHERE id = $1", [id]);
   }
 

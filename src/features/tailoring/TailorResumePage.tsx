@@ -423,6 +423,20 @@ export function TailorResumePage() {
   const visibleValidationIssues = validationIssues.filter(
     (issue) => issue.severity === "error" || !resume?.approvedWarningCodes.includes(issue.code),
   );
+  const missingContactFields = missingRequiredContactFields(profile);
+  const hasBlockingIssues = hasBlockingValidationErrors(validationIssues);
+  const hasUnapprovedIncludedBullets = resume
+    ? [...resume.projects, ...resume.experience]
+        .flatMap((section) => section.bullets)
+        .some((bullet) => bullet.included && !bullet.approved)
+    : false;
+  const exportBlockReason = missingContactFields.length
+    ? `Complete profile fields before export: ${missingContactFields.join(", ")}.`
+    : hasBlockingIssues
+      ? "Resolve blocking validation errors before exporting."
+      : hasUnapprovedIncludedBullets
+        ? "Accept or reject every included bullet before exporting."
+        : "";
   const pageCount = resume ? estimateResumePageCount(resume) : 1;
   const diff = resume && deterministicBaseline ? semanticResumeDiff(deterministicBaseline, resume) : [];
   const quality = resume && analysis && profile
@@ -650,19 +664,15 @@ export function TailorResumePage() {
 
   const exportResume = async () => {
     if (!resume || !profile || !job || !settings) return;
-    const missingContacts = missingRequiredContactFields(profile);
-    if (missingContacts.length) {
-      setError(`Complete the profile before export: ${missingContacts.join(", ")}.`);
+    if (missingContactFields.length) {
+      setError(`Complete the profile before export: ${missingContactFields.join(", ")}.`);
       return;
     }
-    if (hasBlockingValidationErrors(validationIssues)) {
+    if (hasBlockingIssues) {
       setError("Resolve blocking validation errors before exporting.");
       return;
     }
-    const unapproved = [...resume.projects, ...resume.experience]
-      .flatMap((section) => section.bullets)
-      .some((bullet) => bullet.included && !bullet.approved);
-    if (unapproved) {
+    if (hasUnapprovedIncludedBullets) {
       setError("Accept or reject every included bullet before exporting.");
       return;
     }
@@ -845,7 +855,16 @@ export function TailorResumePage() {
                 <button className="icon-button" type="button" title="Redo" onClick={redo} disabled={!future.length}><Redo2 size={15} aria-hidden="true" /></button>
                 <button className="button" type="button" onClick={() => void fitResume()}>Fit one page</button>
                 <button className="button" type="button" onClick={() => void persistCurrent()}><Save size={15} />Save draft</button>
-                <button className="button button-primary" type="button" onClick={() => void exportResume()}><FileDown size={15} />Export PDF</button>
+                <button
+                  className="button button-primary"
+                  type="button"
+                  onClick={() => void exportResume()}
+                  disabled={Boolean(exportBlockReason)}
+                  title={exportBlockReason || "Export PDF"}
+                >
+                  <FileDown size={15} />
+                  Export PDF
+                </button>
                 <button className="button" type="button" onClick={() => void saveApplicationRecord()} disabled={applicationSaved}>
                   <Save size={15} aria-hidden="true" />
                   {applicationSaved ? "Application saved" : "Save application"}

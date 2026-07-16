@@ -45,6 +45,11 @@ describe("main tailoring workflow", () => {
     expect(localStorage.getItem("careercompiler-resume-draft-v3")).toContain("resume");
 
     await user.click(screen.getByRole("button", { name: /accept all/i }));
+    expect(screen.getByRole("button", { name: /export pdf/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /export pdf/i })).toHaveAttribute(
+      "title",
+      expect.stringContaining("email"),
+    );
     const closeEvent = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(closeEvent);
     expect(closeEvent.defaultPrevented).toBe(true);

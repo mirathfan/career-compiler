@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { Link } from "react-router-dom";
 import { Clipboard, Copy, Download, KeyRound, Play, RefreshCcw, Save, Trash2, Upload } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
-import { InlineError, LoadingState } from "../../components/States";
+import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { testOpenAIConnectivity, type OpenAIConnectivityResult } from "../../lib/ai/connectivity";
 import { buildResumeGenerationRequest } from "../../lib/ai/generationRequest";
 import { generateEvidenceGroundedResume } from "../../lib/ai/generationPipeline";
@@ -79,7 +80,20 @@ export function SettingsPage() {
   const checklist = useMemo(() => profileDraft && settingsDraft && databaseQuery.data && latex ? buildFirstRunChecklist({ database: databaseQuery.data, careerFactCount: metricsQuery.data?.careerFacts ?? 0, profile: profileDraft, xelatex: latex, exportDirectoryWritable: exportWritable, apiKeyExists: keyStatus?.exists ?? false, settings: settingsDraft }) : [], [databaseQuery.data, exportWritable, keyStatus?.exists, latex, metricsQuery.data?.careerFacts, profileDraft, settingsDraft]);
 
   if ([profileQuery, settingsQuery, metricsQuery, databaseQuery, searchDiagnosticsQuery, itemsQuery, factsQuery, skillsQuery].some((query) => query.isLoading)) return <LoadingState label="Loading daily-use settings..." />;
-  if (!profileDraft || !settingsDraft) return <div className="p-8"><InlineError message="Seed Career Memory before configuring Settings." /></div>;
+  if (!profileDraft || !settingsDraft) {
+    return (
+      <div>
+        <PageHeader eyebrow="Daily-use readiness" title="Settings" />
+        <div className="p-8">
+          <EmptyState
+            title="Set up Career Memory first"
+            body="Settings depend on a local profile and default resume settings. Load the sample profile or add your own career memory, then return here to configure exports, AI, backups, and diagnostics."
+            action={<Link className="button button-primary" to="/career-memory">Open Career Memory</Link>}
+          />
+        </div>
+      </div>
+    );
+  }
 
   const saveTemplateSettings = async () => {
     const parsed = ResumeTemplateSettingsSchema.safeParse(settingsDraft.templateSettings);

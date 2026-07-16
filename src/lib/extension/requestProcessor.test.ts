@@ -81,6 +81,14 @@ function prepareRequest(): Extract<ExtensionRequest, { type: "prepare_applicatio
     },
     fields: [
       { id: "first", label: "First Name", inputType: "text", detectedFieldType: "input" },
+      {
+        id: "country",
+        label: "Country",
+        inputType: "text",
+        detectedFieldType: "input",
+        normalizedQuestionType: "unknown",
+        classificationConfidence: 0.35,
+      },
       { id: "github", label: "GitHub", inputType: "url", detectedFieldType: "input" },
       { id: "sponsor", label: "Will you require sponsorship now or in the future?", inputType: "radio", detectedFieldType: "radio_group", options: ["Yes", "No"] },
       { id: "resume", label: "Resume / CV", inputType: "file", detectedFieldType: "input" },
@@ -109,6 +117,7 @@ describe("extension request processor", () => {
     expect(preparedApplication.data?.companyName).toBe("ExampleCo");
     expect(preparedApplication.data?.resume?.authorizedFileReference).toBe("resume-ref");
     expect(preparedApplication.data?.fields.some((field) => field.fillKind === "resume_file")).toBe(true);
+    expect(preparedApplication.data?.fields.find((field) => field.fieldId === "country")?.answer).toBe("United States");
     expect(preparedApplication.data?.fields.find((field) => field.fieldId === "sponsor")?.answerSource).toBe("locked_sensitive");
 
     const application = await repository.getApplication(preparedApplication.data!.applicationId);

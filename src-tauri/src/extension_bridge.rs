@@ -176,6 +176,27 @@ fn extension_dir() -> Result<PathBuf, String> {
     Ok(app_support_dir()?.join("Extension"))
 }
 
+#[cfg(unix)]
+fn socket_dir_for_identity(home: &Path, user: Option<&str>) -> PathBuf {
+    let user_segment = user
+        .map(safe_path_segment)
+        .map(|value| value.chars().take(32).collect::<String>())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "user".to_string());
+    let home_hash: String = sha256_hex(&home.to_string_lossy())
+        .chars()
+        .take(12)
+        .collect();
+    PathBuf::from("/tmp").join(format!("careercompiler-{user_segment}-{home_hash}"))
+}
+
+#[cfg(unix)]
+fn socket_dir() -> Result<PathBuf, String> {
+    let user = env::var("USER").ok();
+    Ok(socket_dir_for_identity(&home_dir()?, user.as_deref()))
+}
+
+#[cfg(not(unix))]
 fn socket_dir() -> Result<PathBuf, String> {
     Ok(app_support_dir()?.join("IPC"))
 }
@@ -789,13 +810,32 @@ fn cleanup_expired_exports() -> Result<(), String> {
     let cutoff = SystemTime::now()
         .checked_sub(Duration::from_secs(2 * 60 * 60))
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    cleanup_expired_exports_in(&root, cutoff)
+}
+
+fn cleanup_expired_exports_in(root: &Path, cutoff: SystemTime) -> Result<(), String> {
     for entry in fs::read_dir(root).map_err(|error| format!("resume_cleanup_failed|{error}"))? {
         let entry = entry.map_err(|error| format!("resume_cleanup_entry_failed|{error}"))?;
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("resume_cleanup_metadata_failed|{error}"))?;
-        if metadata.is_file() && metadata.modified().unwrap_or(SystemTime::now()) < cutoff {
-            fs::remove_file(entry.path()).ok();
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("resume_cleanup_type_failed|{error}"))?;
+        if file_type.is_dir() {
+            cleanup_expired_exports_in(&path, cutoff)?;
+            if fs::read_dir(&path)
+                .map_err(|error| format!("resume_cleanup_empty_check_failed|{error}"))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&path).ok();
+            }
+        } else if file_type.is_file() {
+            let metadata = entry
+                .metadata()
+                .map_err(|error| format!("resume_cleanup_metadata_failed|{error}"))?;
+            if metadata.modified().unwrap_or(SystemTime::now()) < cutoff {
+                fs::remove_file(path).ok();
+            }
         }
     }
     Ok(())
@@ -814,12 +854,18 @@ pub fn start_desktop_ipc(state: ExtensionBridgeState) -> Result<(), String> {
     {
         let socket_path = socket_path()?;
         ensure_parent(&socket_path)?;
+        if let Some(parent) = socket_path.parent() {
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("socket_dir_permission_failed|{error}"))?;
+        }
         if socket_path.exists() {
             fs::remove_file(&socket_path)
                 .map_err(|error| format!("socket_stale_remove_failed|{error}"))?;
         }
         let listener = UnixListener::bind(&socket_path)
             .map_err(|error| format!("socket_bind_failed|{error}"))?;
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("socket_permission_failed|{error}"))?;
         push_diagnostic(
             &state,
             "info",
@@ -1267,5 +1313,72 @@ fn ping_installed_host(extension_id: &str) -> Result<(), String> {
             let _ = child.kill();
             Err("host_ping_timeout|Native host did not respond to ping.".to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_export_root(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "careercompiler-extension-bridge-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn cleanup_expired_exports_recurses_into_application_dirs() {
+        let root = temp_export_root("expired");
+        let application_dir = root.join("application-1");
+        let nested_file = application_dir.join("resume-old.pdf");
+        fs::create_dir_all(&application_dir).unwrap();
+        fs::write(&nested_file, b"old resume").unwrap();
+
+        cleanup_expired_exports_in(&root, SystemTime::now() + Duration::from_secs(1)).unwrap();
+
+        assert!(!nested_file.exists());
+        assert!(!application_dir.exists());
+        assert!(root.exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn cleanup_expired_exports_preserves_non_expired_nested_files() {
+        let root = temp_export_root("current");
+        let application_dir = root.join("application-1");
+        let nested_file = application_dir.join("resume-current.pdf");
+        fs::create_dir_all(&application_dir).unwrap();
+        fs::write(&nested_file, b"current resume").unwrap();
+
+        cleanup_expired_exports_in(&root, UNIX_EPOCH).unwrap();
+
+        assert!(nested_file.exists());
+        assert!(application_dir.exists());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_path_stays_under_macos_unix_socket_limit_for_long_home_paths() {
+        let long_home = PathBuf::from(format!(
+            "/Users/{}",
+            "very-long-careercompiler-profile-name-".repeat(6)
+        ));
+        let socket_path = socket_dir_for_identity(
+            &long_home,
+            Some("very-long-local-username-for-runtime-socket-tests"),
+        )
+        .join("native-host.sock");
+
+        assert!(
+            socket_path.to_string_lossy().len() < 104,
+            "socket path was too long: {}",
+            socket_path.to_string_lossy()
+        );
     }
 }

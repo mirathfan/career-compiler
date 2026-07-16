@@ -87,6 +87,14 @@ function groupOptions(element) {
     .filter(Boolean);
 }
 
+function groupLabelFor(element) {
+  const legend = element.closest("fieldset")?.querySelector("legend")?.textContent?.trim() || "";
+  if (legend) return legend;
+  const question = element.closest(".application-question, .custom-question, .ashby-application-form-field, .form-field, [role='group']");
+  const questionText = (question?.innerText || question?.textContent || "").replace(/\s+/g, " ").trim();
+  return questionText || labelFor(element);
+}
+
 function baseField(element, index, override = {}) {
   const label = override.label ?? labelFor(element);
   const inputType = override.inputType ?? (element instanceof HTMLInputElement ? element.type : element.tagName.toLowerCase());
@@ -148,7 +156,7 @@ function scanFields() {
         selector,
         inputType: element.type,
         detectedFieldType: `${element.type}_group`,
-        label: element.closest("fieldset")?.querySelector("legend")?.textContent?.trim() || labelFor(element),
+        label: groupLabelFor(element),
         options: groupOptions(element),
       }));
       return;

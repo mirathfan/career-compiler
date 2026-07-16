@@ -125,6 +125,10 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function valueJson(value: unknown) {
+  return JSON.stringify(value ?? null);
+}
+
 function includesSearch(value: string, search: string) {
   return value.toLowerCase().includes(search.toLowerCase());
 }
@@ -480,6 +484,9 @@ export class MemoryRepository implements AppRepository {
     const existing = claim.id
       ? this.state.candidateClaims.find((item) => item.id === claim.id)
       : undefined;
+    if (existing?.locked && (existing.category !== claim.category || valueJson(existing.value) !== valueJson(claim.value))) {
+      throw new Error("Locked candidate claims must be unlocked before their category or value can be changed.");
+    }
     const saved: CandidateClaim = {
       id: existing?.id ?? claim.id ?? createId("candidate-claim"),
       category: claim.category,
@@ -499,6 +506,8 @@ export class MemoryRepository implements AppRepository {
   }
 
   async deleteCandidateClaim(id: string) {
+    const existing = this.state.candidateClaims.find((claim) => claim.id === id);
+    if (existing?.locked) throw new Error("Locked candidate claims must be unlocked before they can be deleted.");
     this.state.candidateClaims = this.state.candidateClaims.filter((claim) => claim.id !== id);
     this.persist();
   }
@@ -514,6 +523,9 @@ export class MemoryRepository implements AppRepository {
     const existing = answer.id
       ? this.state.sensitiveAnswers.find((item) => item.id === answer.id)
       : this.state.sensitiveAnswers.find((item) => item.key === answer.key);
+    if (existing?.locked && valueJson(existing.value) !== valueJson(answer.value)) {
+      throw new Error("Locked sensitive answers must be unlocked before their value can be changed.");
+    }
     const saved: SensitiveAnswer = {
       id: existing?.id ?? answer.id ?? createId("sensitive-answer"),
       key: answer.key,
@@ -534,6 +546,8 @@ export class MemoryRepository implements AppRepository {
   }
 
   async deleteSensitiveAnswer(id: string) {
+    const existing = this.state.sensitiveAnswers.find((answer) => answer.id === id);
+    if (existing?.locked) throw new Error("Locked sensitive answers must be unlocked before they can be deleted.");
     this.state.sensitiveAnswers = this.state.sensitiveAnswers.filter((answer) => answer.id !== id);
     this.persist();
   }

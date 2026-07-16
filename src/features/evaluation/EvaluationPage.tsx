@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { Check, GitCompare, Play, Save, ShieldCheck } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
-import { InlineError, LoadingState } from "../../components/States";
+import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { compareGenerationResults } from "../../lib/evaluation/comparison";
 import { EVALUATION_FIXTURES } from "../../lib/evaluation/fixtures";
@@ -35,7 +36,20 @@ export function EvaluationPage() {
     return <LoadingState label="Loading evaluation fixtures..." />;
   }
   const loadedProfile = profile.data;
-  if (!loadedProfile) return <div className="p-8"><InlineError message="Seed a profile before running evaluations." /></div>;
+  if (!loadedProfile) {
+    return (
+      <div>
+        <PageHeader eyebrow="Repeatable generation QA" title="Evaluation Lab" />
+        <div className="p-8">
+          <EmptyState
+            title="Set up Career Memory first"
+            body="Evaluation fixtures need a candidate profile, career items, facts, and skills. Load the sample profile or add career memory before running ranking, mock, or live OpenAI evaluations."
+            action={<Link className="button button-primary" to="/career-memory">Open Career Memory</Link>}
+          />
+        </div>
+      </div>
+    );
+  }
 
   const runSuite = async (mode: EvaluationMode) => {
     if (mode === "openai" && !window.confirm("Live evaluation makes multiple paid OpenAI API requests. Continue?")) return;
