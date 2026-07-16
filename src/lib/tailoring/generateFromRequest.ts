@@ -8,13 +8,6 @@ import type {
 } from "../../types/domain";
 import { createId, formatDateRange, unique } from "../utils";
 
-const loopProjectPriority = ["project-forge", "project-aura", "project-client-bookstore"];
-
-function projectPriority(id: string) {
-  const index = loopProjectPriority.indexOf(id);
-  return index === -1 ? loopProjectPriority.length + 1 : index;
-}
-
 function tailoredText(factId: string, statement: string) {
   const known: Record<string, string> = {
     "project-forge-fact-01":
@@ -57,6 +50,9 @@ export function generateResumeFromAllowedEvidence(
 ): TailoredResume {
   const itemById = new Map(request.selectedCareerItems.map((item) => [item.careerItemId, item]));
   const factById = new Map(request.selectedFacts.map((fact) => [fact.factId, fact]));
+  const plannedItemOrder = new Map(
+    plan.selectedCareerItemIds.map((careerItemId, index) => [careerItemId, index]),
+  );
   const allowedSkillNames = new Set(request.approvedSkills.map((skill) => skill.name));
   const usedFacts = new Set<string>();
   const bulletsByItem = new Map<string, ResumeBullet[]>();
@@ -138,7 +134,11 @@ export function generateResumeFromAllowedEvidence(
 
   const projects = sections
     .filter((section) => itemById.get(section.careerItemId)?.type === "project")
-    .sort((a, b) => projectPriority(a.careerItemId) - projectPriority(b.careerItemId))
+    .sort(
+      (a, b) =>
+        (plannedItemOrder.get(a.careerItemId) ?? Number.MAX_SAFE_INTEGER) -
+        (plannedItemOrder.get(b.careerItemId) ?? Number.MAX_SAFE_INTEGER),
+    )
     .slice(0, plan.contentBudget.maxProjects);
   const experience = sections.filter(
     (section) => itemById.get(section.careerItemId)?.type === "employment",

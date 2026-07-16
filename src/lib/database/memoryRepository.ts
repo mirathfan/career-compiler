@@ -1,16 +1,20 @@
 import type {
   AppSettings,
+  ApplicationRecord,
   ApprovedBulletVariant,
   BackupPayload,
   CareerFact,
   CareerItem,
   DashboardMetrics,
+  EvaluationSummary,
   FactUsage,
   Job,
+  MigrationEvent,
   Profile,
   ResumeVersion,
   Skill,
 } from "../../types/domain";
+import { PROMPT_VERSIONS } from "../ai/prompts";
 import { createId, nowIso } from "../utils";
 import {
   emptyGenerationMetadata,
@@ -29,6 +33,9 @@ interface MemoryState {
   jobs: Job[];
   resumes: ResumeVersion[];
   approvedVariants: ApprovedBulletVariant[];
+  applications: ApplicationRecord[];
+  evaluationSummaries: EvaluationSummary[];
+  migrationEvents: MigrationEvent[];
   settings: AppSettings;
 }
 
@@ -41,7 +48,10 @@ function emptyState(): MemoryState {
     jobs: [],
     resumes: [],
     approvedVariants: [],
-    settings: { ...defaultSettings },
+    applications: [],
+    evaluationSummaries: [],
+    migrationEvents: [],
+    settings: clone(defaultSettings),
   };
 }
 
@@ -51,6 +61,12 @@ function clone<T>(value: T): T {
 
 function includesSearch(value: string, search: string) {
   return value.toLowerCase().includes(search.toLowerCase());
+}
+
+function mergeById<T extends { id: string }>(current: T[], incoming: T[]) {
+  const merged = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) merged.set(item.id, item);
+  return [...merged.values()];
 }
 
 export class MemoryRepository implements AppRepository {
@@ -73,12 +89,31 @@ export class MemoryRepository implements AppRepository {
         ...emptyState(),
         ...stored,
         approvedVariants: stored.approvedVariants ?? [],
+        applications: stored.applications ?? [],
+        evaluationSummaries: stored.evaluationSummaries ?? [],
+        migrationEvents: stored.migrationEvents ?? [],
+        careerFacts: (stored.careerFacts ?? []).map((fact) => ({
+          ...fact,
+          sourceType: fact.sourceType ?? "user_statement",
+          sourceReference: fact.sourceReference ?? fact.sourceNote ?? "",
+          verificationDate: fact.verificationDate ?? "",
+          lastReviewedDate: fact.lastReviewedDate ?? "",
+          notes: fact.notes ?? "",
+        })),
         settings: {
           ...defaultSettings,
           ...(stored.settings ?? {}),
           tailoringDefaults: {
             ...defaultSettings.tailoringDefaults,
             ...(stored.settings?.tailoringDefaults ?? {}),
+          },
+          templateSettings: {
+            ...defaultSettings.templateSettings,
+            ...(stored.settings?.templateSettings ?? {}),
+          },
+          uiState: {
+            ...defaultSettings.uiState,
+            ...(stored.settings?.uiState ?? {}),
           },
         },
         resumes: (stored.resumes ?? []).map((resume) => ({
@@ -89,6 +124,9 @@ export class MemoryRepository implements AppRepository {
           generationProvider: resume.generationProvider ?? "deterministic",
           generationModel: resume.generationModel ?? "",
           promptVersion: resume.promptVersion ?? "",
+          promptVersionsJson: resume.promptVersionsJson ?? PROMPT_VERSIONS,
+          layoutProfileId: resume.layoutProfileId ?? "general-software-engineer",
+          templateSettingsJson: resume.templateSettingsJson ?? defaultSettings.templateSettings,
           generationMetadataJson: normalizeGenerationMetadata(resume.generationMetadataJson),
           deterministicBaselineJson: resume.deterministicBaselineJson
             ? normalizeTailoredResume(resume.deterministicBaselineJson)
@@ -232,6 +270,11 @@ export class MemoryRepository implements AppRepository {
       statement: fact.statement,
       evidenceStatus: fact.evidenceStatus ?? existing?.evidenceStatus ?? "user_provided",
       sourceNote: fact.sourceNote ?? existing?.sourceNote ?? "",
+      sourceType: fact.sourceType ?? existing?.sourceType ?? "user_statement",
+      sourceReference: fact.sourceReference ?? existing?.sourceReference ?? "",
+      verificationDate: fact.verificationDate ?? existing?.verificationDate ?? "",
+      lastReviewedDate: fact.lastReviewedDate ?? existing?.lastReviewedDate ?? "",
+      notes: fact.notes ?? existing?.notes ?? "",
       skillTags: fact.skillTags ?? existing?.skillTags ?? [],
       roleTags: fact.roleTags ?? existing?.roleTags ?? [],
       metricTokens: fact.metricTokens ?? existing?.metricTokens ?? [],
@@ -341,6 +384,11 @@ export class MemoryRepository implements AppRepository {
       generationProvider: resume.generationProvider ?? existing?.generationProvider ?? "deterministic",
       generationModel: resume.generationModel ?? existing?.generationModel ?? "",
       promptVersion: resume.promptVersion ?? existing?.promptVersion ?? "",
+      promptVersionsJson: resume.promptVersionsJson ?? existing?.promptVersionsJson ?? PROMPT_VERSIONS,
+      layoutProfileId:
+        resume.layoutProfileId ?? existing?.layoutProfileId ?? "general-software-engineer",
+      templateSettingsJson:
+        resume.templateSettingsJson ?? existing?.templateSettingsJson ?? defaultSettings.templateSettings,
       generationMetadataJson:
         resume.generationMetadataJson ?? existing?.generationMetadataJson ?? emptyGenerationMetadata,
       deterministicBaselineJson:
@@ -438,6 +486,89 @@ export class MemoryRepository implements AppRepository {
     };
   }
 
+  async listApplications() {
+    return clone(this.state.applications.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  }
+
+  async getApplication(id: string) {
+    return clone(this.state.applications.find((application) => application.id === id) ?? null);
+  }
+
+  async saveApplication(
+    application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">,
+  ) {
+    const existing = application.id
+      ? this.state.applications.find((item) => item.id === application.id)
+      : undefined;
+    const now = nowIso();
+    const status = application.status ?? existing?.status ?? "preparing";
+    const saved: ApplicationRecord = {
+      id: existing?.id ?? application.id ?? createId("application"),
+      jobId: application.jobId ?? existing?.jobId ?? "",
+      company: application.company,
+      role: application.role,
+      jobUrl: application.jobUrl ?? existing?.jobUrl ?? "",
+      resumeVersionId: application.resumeVersionId ?? existing?.resumeVersionId ?? "",
+      status,
+      appliedDate:
+        application.appliedDate?.trim() ||
+        existing?.appliedDate ||
+        (status === "applied" ? now.slice(0, 10) : ""),
+      referralContact: application.referralContact ?? existing?.referralContact ?? "",
+      notes: application.notes ?? existing?.notes ?? "",
+      createdAt: existing?.createdAt ?? application.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.state.applications = [
+      ...this.state.applications.filter((item) => item.id !== saved.id),
+      saved,
+    ];
+    this.persist();
+    return clone(saved);
+  }
+
+  async deleteApplication(id: string) {
+    this.state.applications = this.state.applications.filter((application) => application.id !== id);
+    this.persist();
+  }
+
+  async listEvaluationSummaries() {
+    return clone(
+      this.state.evaluationSummaries.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    );
+  }
+
+  async saveEvaluationSummary(summary: EvaluationSummary) {
+    this.state.evaluationSummaries = [
+      ...this.state.evaluationSummaries.filter((item) => item.id !== summary.id),
+      clone(summary),
+    ];
+    this.persist();
+    return clone(summary);
+  }
+
+  async markEvaluationPreferred(id: string) {
+    const selected = this.state.evaluationSummaries.find((summary) => summary.id === id);
+    if (!selected) return;
+    this.state.evaluationSummaries = this.state.evaluationSummaries.map((summary) => ({
+      ...summary,
+      preferred: summary.fixtureId === selected.fixtureId ? summary.id === id : summary.preferred,
+    }));
+    this.persist();
+  }
+
+  async listMigrationEvents() {
+    return clone(this.state.migrationEvents);
+  }
+
+  async getDatabaseStatus() {
+    return {
+      writable: true,
+      schemaVersion: 3,
+      latestMigration: clone(this.state.migrationEvents.at(-1) ?? null),
+    };
+  }
+
   async getSettings() {
     return clone({
       ...defaultSettings,
@@ -446,6 +577,11 @@ export class MemoryRepository implements AppRepository {
         ...defaultSettings.tailoringDefaults,
         ...this.state.settings.tailoringDefaults,
       },
+      templateSettings: {
+        ...defaultSettings.templateSettings,
+        ...this.state.settings.templateSettings,
+      },
+      uiState: { ...defaultSettings.uiState, ...this.state.settings.uiState },
     });
   }
 
@@ -457,24 +593,60 @@ export class MemoryRepository implements AppRepository {
 
   async exportBackup(): Promise<BackupPayload> {
     return {
-      ...clone(this.state),
+      profile: clone(this.state.profile),
+      careerItems: clone(this.state.careerItems),
+      careerFacts: clone(this.state.careerFacts),
+      skills: clone(this.state.skills),
+      jobs: clone(this.state.jobs),
+      resumes: clone(this.state.resumes),
+      approvedVariants: clone(this.state.approvedVariants),
+      applications: clone(this.state.applications),
+      evaluationSummaries: clone(this.state.evaluationSummaries),
+      settings: clone(this.state.settings),
       exportedAt: nowIso(),
-      schemaVersion: 2,
+      schemaVersion: 3,
     };
   }
 
-  async importBackup(payload: BackupPayload) {
-    this.state = {
-      profile: payload.profile,
-      careerItems: payload.careerItems,
-      careerFacts: payload.careerFacts,
-      skills: payload.skills,
-      jobs: payload.jobs,
-      resumes: payload.resumes,
-      approvedVariants: payload.approvedVariants ?? [],
-      settings: payload.settings,
-    };
-    this.persist();
+  async importBackup(payload: BackupPayload, mode: "replace" | "merge" = "replace") {
+    const previous = clone(this.state);
+    try {
+      this.state = mode === "merge"
+        ? {
+            ...this.state,
+            profile: payload.profile ?? this.state.profile,
+            careerItems: mergeById(this.state.careerItems, payload.careerItems),
+            careerFacts: mergeById(this.state.careerFacts, payload.careerFacts),
+            skills: mergeById(this.state.skills, payload.skills),
+            jobs: mergeById(this.state.jobs, payload.jobs),
+            resumes: mergeById(this.state.resumes, payload.resumes),
+            approvedVariants: mergeById(this.state.approvedVariants, payload.approvedVariants ?? []),
+            applications: mergeById(this.state.applications, payload.applications ?? []),
+            evaluationSummaries: mergeById(
+              this.state.evaluationSummaries,
+              payload.evaluationSummaries ?? [],
+            ),
+            settings: payload.settings,
+          }
+        : {
+            profile: payload.profile,
+            careerItems: payload.careerItems,
+            careerFacts: payload.careerFacts,
+            skills: payload.skills,
+            jobs: payload.jobs,
+            resumes: payload.resumes,
+            approvedVariants: payload.approvedVariants ?? [],
+            applications: payload.applications ?? [],
+            evaluationSummaries: payload.evaluationSummaries ?? [],
+            migrationEvents: this.state.migrationEvents,
+            settings: payload.settings,
+          };
+      this.persist();
+    } catch (error) {
+      this.state = previous;
+      this.persist();
+      throw error;
+    }
   }
 
   private persist() {

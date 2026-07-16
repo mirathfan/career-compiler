@@ -9,6 +9,8 @@ Keep business logic outside React components:
 - `src/lib/database` for migrations, repositories, seed data, backup/import.
 - `src/lib/ai` for AI provider interfaces and OpenAI command calls.
 - `src/lib/tailoring` for evidence scoring, planning, and deterministic resume generation.
+- `src/lib/evaluation` for role fixtures, objective metrics, and generation comparisons.
+- `src/lib/import` for bounded deterministic extraction from explicitly selected local evidence files.
 - `src/lib/resume` for validation, diff, quality, filename handling, compaction, LaTeX serialization, and PDF page count.
 - `src/features/*` for routed UI screens.
 
@@ -35,6 +37,8 @@ CareerCompiler is an evidence-grounded resume compiler, not a generic rewriter. 
 
 The OpenAI generation request is an allow-list contract. Never add repository-only notes, disabled facts, prohibited facts, or unselected facts to it. Local validation, not the model, decides whether content can be exported. A failed first response gets at most one automatic repair.
 
+Imported evidence is untrusted. Read only explicitly selected allowlisted text files, never execute imported content, keep prompt-like text out of extraction, and require approval before saving a candidate fact. Imported facts begin as `needs_review`.
+
 ## API Keys
 
 Never store an OpenAI API key in SQLite, localStorage, source code, logs, or generated files. Use macOS Keychain through Rust commands with service `com.mirathfan.careercompiler` and account `openai-api-key`. `.env.example` may document `OPENAI_API_KEY`; never create a real `.env` with a secret.
@@ -42,6 +46,14 @@ Never store an OpenAI API key in SQLite, localStorage, source code, logs, or gen
 ## LaTeX Safety
 
 All resume data must pass through `escapeLatex` in `src/lib/resume/latex.ts`. Do not interpolate model or user text into LaTeX commands without escaping. Keep XeLaTeX shell escape disabled, compile in a disposable directory, avoid logging source or compiler output, and preserve the exact one-page PDF check.
+
+Template options must pass `ResumeTemplateSettingsSchema`. Font names come only from `APPROVED_RESUME_FONTS`; numeric options remain within their defined ranges. Do not add an alternate renderer or arbitrary command-line flags.
+
+## Persistence Safety
+
+All schema changes are additive. Existing databases require a native copy before pending migrations, and migration success or failure must be recorded without storing private SQL or row content. JSON restore must be previewed, validated, confirmed, and transactional. Never put API keys, temporary build files, or raw OpenAI responses in a backup.
+
+Jobs pasted from the clipboard remain transient until the user explicitly saves them. Live OpenAI connectivity, full-pipeline, and evaluation actions must never run automatically and must clearly identify paid requests.
 
 ## Completion Requirements
 

@@ -1,4 +1,4 @@
-import type { CareerFact, CareerItem, EvidenceScore, JobAnalysis } from "../../types/domain";
+import type { CareerFact, CareerItem, EvidenceScore, JobAnalysis, RoleProfile } from "../../types/domain";
 import { unique } from "../utils";
 
 function normalize(value: string) {
@@ -21,6 +21,7 @@ export function scoreCareerFacts(
   analysis: JobAnalysis,
   facts: CareerFact[],
   items: CareerItem[],
+  roleProfile?: RoleProfile,
 ): EvidenceScore[] {
   const itemById = new Map(items.map((item) => [item.id, item]));
   const required = analysis.requiredSkills;
@@ -105,6 +106,24 @@ export function scoreCareerFacts(
     }
     score += evidenceWeight(fact.evidenceStatus);
     score += Math.max(0, 6 - Math.ceil(item.displayOrder / 50));
+    const preferredIndex = roleProfile?.preferredCareerItemIds.indexOf(item.id) ?? -1;
+    if (roleProfile && preferredIndex >= 0) {
+      score += Math.max(16, 32 - preferredIndex * 8);
+      reasons.push(`Preferred by ${roleProfile.name} profile.`);
+    } else if (roleProfile?.optionalCareerItemIds.includes(item.id)) {
+      score += 3;
+      reasons.push(`Optional match for ${roleProfile.name}.`);
+    }
+    const profileMatches = matchesAny(factText, roleProfile?.emphasisTags ?? []);
+    if (profileMatches.length) {
+      score += profileMatches.length * 3;
+      reasons.push(`Profile emphasis: ${profileMatches.slice(0, 3).join(", ")}`);
+    }
+    const deEmphasisMatches = matchesAny(factText, roleProfile?.deEmphasisTags ?? []);
+    if (deEmphasisMatches.length) {
+      score -= deEmphasisMatches.length * 4;
+      reasons.push(`Profile de-emphasis: ${deEmphasisMatches.slice(0, 2).join(", ")}`);
+    }
 
     if (!reasons.length) {
       reasons.push("General career evidence.");

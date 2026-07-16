@@ -42,6 +42,17 @@ export function allResumeBullets(resume: TailoredResume) {
   );
 }
 
+export function missingRequiredContactFields(profile: Profile | null) {
+  if (!profile) return ["name", "email", "phone", "city", "state or region"];
+  const missing: string[] = [];
+  if (!profile.fullName.trim()) missing.push("name");
+  if (!profile.email.trim() || !profile.email.includes("@")) missing.push("email");
+  if (!profile.phone.trim()) missing.push("phone");
+  if (!profile.city.trim()) missing.push("city");
+  if (!profile.region.trim()) missing.push("state or region");
+  return missing;
+}
+
 export function extractNumericTokens(text: string) {
   return text.match(numberPattern)?.map(normalizeNumber) ?? [];
 }

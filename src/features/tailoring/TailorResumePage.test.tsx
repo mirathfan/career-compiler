@@ -23,7 +23,7 @@ describe("main tailoring workflow", () => {
     localStorage.clear();
   });
 
-  it("runs the mock provider workflow from sample job to generated resume", async () => {
+  it("lazy-loads the mock workflow and persists only after explicit save", async () => {
     const user = userEvent.setup();
     renderApp();
 
@@ -33,12 +33,20 @@ describe("main tailoring workflow", () => {
     await user.click(await screen.findByRole("button", { name: /use sample job/i }));
     await user.click(screen.getByRole("button", { name: /analyze job/i }));
     expect(await screen.findByText(/job analysis/i)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("careercompiler-dev") ?? "{}").jobs).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: /score evidence/i }));
+    await user.click(screen.getByRole("button", { name: /save job and score evidence/i }));
+    expect(JSON.parse(localStorage.getItem("careercompiler-dev") ?? "{}").jobs).toHaveLength(1);
     expect(await screen.findByText(/tailoring controls/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /generate tailored resume/i }));
 
     await waitFor(() => expect(screen.getByText(/generation review/i)).toBeInTheDocument());
     expect(screen.getAllByText(/exact source facts/i).length).toBeGreaterThan(0);
+    expect(localStorage.getItem("careercompiler-resume-draft-v3")).toContain("resume");
+
+    await user.click(screen.getByRole("button", { name: /accept all/i }));
+    const closeEvent = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(closeEvent);
+    expect(closeEvent.defaultPrevented).toBe(true);
   });
 });

@@ -1,4 +1,15 @@
-export const PROMPT_VERSION = "careercompiler-resume-v2.0.0";
+import type { PromptVersionMap } from "../../types/domain";
+
+export const PROMPT_VERSIONS: PromptVersionMap = {
+  jobAnalysis: "careercompiler-job-analysis-v3.0.0",
+  planning: "careercompiler-plan-v3.0.0",
+  resumeGeneration: "careercompiler-resume-v3.0.0",
+  repair: "careercompiler-repair-v3.0.0",
+  bulletRegeneration: "careercompiler-bullet-regeneration-v3.0.0",
+  bulletShortening: "careercompiler-bullet-shortening-v3.0.0",
+};
+
+export const PROMPT_VERSION = PROMPT_VERSIONS.resumeGeneration;
 
 export const JOB_ANALYSIS_PROMPT = `You analyze a job description for an evidence-grounded resume compiler.
 Extract only information stated or directly implied by the job description.

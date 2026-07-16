@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  ApplicationRecord,
   ApprovedBulletVariant,
   BackupPayload,
   CareerFact,
@@ -10,6 +11,9 @@ import type {
   ResumeVersion,
   Skill,
   FactUsage,
+  EvaluationSummary,
+  MigrationEvent,
+  DatabaseStatus,
 } from "../../types/domain";
 
 export interface CareerFactFilters {
@@ -59,8 +63,19 @@ export interface AppRepository {
   deleteApprovedBulletVariant(id: string): Promise<void>;
   listFactUsage(factId: string): Promise<FactUsage[]>;
   getDashboardMetrics(): Promise<DashboardMetrics>;
+  listApplications(): Promise<ApplicationRecord[]>;
+  getApplication(id: string): Promise<ApplicationRecord | null>;
+  saveApplication(
+    application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">,
+  ): Promise<ApplicationRecord>;
+  deleteApplication(id: string): Promise<void>;
+  listEvaluationSummaries(): Promise<EvaluationSummary[]>;
+  saveEvaluationSummary(summary: EvaluationSummary): Promise<EvaluationSummary>;
+  markEvaluationPreferred(id: string): Promise<void>;
+  listMigrationEvents(): Promise<MigrationEvent[]>;
+  getDatabaseStatus(): Promise<DatabaseStatus>;
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<AppSettings>;
   exportBackup(): Promise<BackupPayload>;
-  importBackup(payload: BackupPayload): Promise<void>;
+  importBackup(payload: BackupPayload, mode?: "replace" | "merge"): Promise<void>;
 }

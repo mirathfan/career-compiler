@@ -17,6 +17,8 @@ Errors block approval and export. They cover:
 
 Errors involving nonexistent or prohibited evidence cannot be manually approved.
 
+Final PDF export also requires a nonblank name, valid email, phone, city, and state or region. Missing contact information never blocks Career Memory editing, job analysis, evidence review, or draft generation.
+
 ## Warnings
 
 Warnings cover needs-review evidence, near duplicates, repeated opening phrases, vague wording, excessive length, missing context, and similar quality concerns. The review UI shows warnings immediately after manual edits. Only explicitly safe warnings can be acknowledged, and the approved warning code is stored in the resume content.
@@ -30,3 +32,7 @@ The user can retry, switch to mock mode, restore the deterministic fallback, or 
 ## Quality Panel
 
 Quality checks report counts and explanations rather than an invented score. They include represented required and preferred skills, supported responsibilities, unsupported claims, duplicate and long bullets, weak openings, available metrics, unused high-relevance facts, one-page fit, contact completeness, and saved-link completeness.
+
+## Evaluation Contract
+
+The local evaluation suite reuses the same validator. It reports unsupported claims and unsupported numbers separately and requires both counts to remain zero. Other objective fields include selected expected and unexpected items, represented skills, high-relevance fact usage, duplicate and long bullets, one-page estimation, validation success, locked-content preservation, duration, and provider token usage. It does not synthesize an ATS score or automatically choose a winning model.

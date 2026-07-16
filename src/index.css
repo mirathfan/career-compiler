@@ -106,3 +106,19 @@ textarea {
   background: #e2e8f0;
   color: #64748b;
 }
+
+.icon-button {
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #334155;
+}
+
+.icon-button:hover {
+  background: #f1f5f9;
+}

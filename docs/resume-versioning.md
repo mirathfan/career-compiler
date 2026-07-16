@@ -4,7 +4,7 @@ Each generated or regenerated resume is saved as a separate `resume_versions` ro
 
 ## Lineage
 
-A root version has an empty `parentResumeVersionId`. Regeneration creates a child with the previous version ID as its parent. The saved record also includes provider, model, prompt version, safe generation metadata, validation results, deterministic baseline, status, and last export path.
+A root version has an empty `parentResumeVersionId`. Regeneration creates a child with the previous version ID as its parent. The saved record also includes provider, model, all stage prompt versions, role profile, template-settings snapshot, safe generation metadata, validation results, deterministic baseline, status, and last export path.
 
 Duplication and regeneration are distinct:
 
@@ -16,6 +16,8 @@ Semantic diff categories are added, removed, reworded, reordered, skills changed
 ## Review State
 
 The session store tracks AI, deterministic, and user-edited bullets plus accepted, rejected, included, and locked state. A rejected bullet remains excluded for the session until the user explicitly regenerates it. Locked bullets and career items survive regeneration and are protected from compaction removal.
+
+The review store persists the current draft, deterministic baseline, bounded undo/redo stacks, and dirty flag to local storage so accidental closure does not discard edits. `Command+S`, `Command+Z`, and `Command+Shift+Z` map to save, undo, and redo in review. Window close receives the platform unsaved-change warning while dirty; replacing a job form also requires confirmation. Saved resume content remains in SQLite.
 
 ## Approved Variants
 

@@ -1,16 +1,53 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, CheckCheck, Plus, Save, ToggleLeft, ToggleRight, Trash2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  ArrowDown,
+  ArrowUp,
+  Check,
+  CheckCheck,
+  FileInput,
+  Plus,
+  Save,
+  ToggleLeft,
+  ToggleRight,
+  Trash2,
+  X,
+} from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { parseCsv } from "../../lib/utils";
 import { extractNumericTokens } from "../../lib/resume/validation";
-import type { CareerFact, CareerItem, CareerItemType, EvidenceStatus, Skill } from "../../types/domain";
+import {
+  approvedCandidateToFact,
+  extractEvidenceCandidates,
+  type LocalEvidenceFile,
+} from "../../lib/import/evidenceImport";
+import type {
+  CareerFact,
+  CareerFactSourceType,
+  CareerItem,
+  CareerItemType,
+  EvidenceImportCandidate,
+  EvidenceStatus,
+  Skill,
+} from "../../types/domain";
 
 const itemTypes: CareerItemType[] = ["project", "employment", "education"];
 const evidenceStatuses: EvidenceStatus[] = ["user_provided", "verified", "needs_review", "prohibited"];
+const sourceTypes: CareerFactSourceType[] = [
+  "user_statement",
+  "repository",
+  "readme",
+  "test_result",
+  "build_output",
+  "deployment_result",
+  "resume",
+  "manually_verified",
+];
 const emptyItems: CareerItem[] = [];
 const emptyFacts: CareerFact[] = [];
 const emptySkills: Skill[] = [];
@@ -37,6 +74,11 @@ function emptyFact(careerItemId: string): Partial<CareerFact> & Pick<CareerFact,
     statement: "",
     evidenceStatus: "user_provided",
     sourceNote: "",
+    sourceType: "user_statement",
+    sourceReference: "",
+    verificationDate: "",
+    lastReviewedDate: "",
+    notes: "",
     skillTags: [],
     roleTags: [],
     metricTokens: [],
@@ -171,6 +213,7 @@ function FactEditor({
   duplicate,
   usage,
   variants,
+  reviewReasons,
 }: {
   fact: CareerFact;
   onSave: (fact: CareerFact) => void;
@@ -180,6 +223,7 @@ function FactEditor({
   duplicate: boolean;
   usage: Array<{ resumeName: string; bulletText: string }>;
   variants: Array<{ text: string }>;
+  reviewReasons: string[];
 }) {
   const [draft, setDraft] = useState({
     ...fact,
@@ -271,6 +315,61 @@ function FactEditor({
         placeholder="Source note"
         onChange={(event) => setDraft({ ...draft, sourceNote: event.target.value })}
       />
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <select
+          className="field"
+          value={draft.sourceType}
+          onChange={(event) =>
+            setDraft({ ...draft, sourceType: event.target.value as CareerFactSourceType })
+          }
+          aria-label="Source type"
+        >
+          {sourceTypes.map((sourceType) => (
+            <option key={sourceType} value={sourceType}>
+              {sourceType.replaceAll("_", " ")}
+            </option>
+          ))}
+        </select>
+        <input
+          className="field"
+          value={draft.sourceReference}
+          placeholder="Source path, URL, or reference"
+          onChange={(event) => setDraft({ ...draft, sourceReference: event.target.value })}
+        />
+        <label className="text-xs font-semibold text-slate-600">
+          Verified on
+          <input
+            className="field mt-1"
+            type="date"
+            value={draft.verificationDate}
+            onChange={(event) => setDraft({ ...draft, verificationDate: event.target.value })}
+          />
+        </label>
+        <label className="text-xs font-semibold text-slate-600">
+          Last reviewed
+          <input
+            className="field mt-1"
+            type="date"
+            value={draft.lastReviewedDate}
+            onChange={(event) => setDraft({ ...draft, lastReviewedDate: event.target.value })}
+          />
+        </label>
+      </div>
+      <textarea
+        className="field mt-3 min-h-16"
+        value={draft.notes}
+        placeholder="Private review notes"
+        onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
+      />
+      {reviewReasons.length ? (
+        <div className="mt-3 flex flex-wrap gap-2" aria-label="Review reasons">
+          {reviewReasons.map((reason) => (
+            <span key={reason} className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+              {reason}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
         <p><strong>Exact numeric tokens:</strong> {exactTokens.length ? exactTokens.join(", ") : "None"}</p>
         {unlistedTokens.length ? (
@@ -301,6 +400,11 @@ function FactEditor({
             statement: draft.statement,
             evidenceStatus: draft.evidenceStatus,
             sourceNote: draft.sourceNote,
+            sourceType: draft.sourceType,
+            sourceReference: draft.sourceReference,
+            verificationDate: draft.verificationDate,
+            lastReviewedDate: draft.lastReviewedDate,
+            notes: draft.notes,
             skillTags: parseCsv(draft.skillTagsText),
             roleTags: parseCsv(draft.roleTagsText),
             metricTokens: parseCsv(draft.metricTokensText),
@@ -328,7 +432,11 @@ export function CareerMemoryPage() {
   });
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [reviewOnly, setReviewOnly] = useState(false);
   const [selectedFactIds, setSelectedFactIds] = useState<string[]>([]);
+  const [importCandidates, setImportCandidates] = useState<EvidenceImportCandidate[]>([]);
+  const [importFileName, setImportFileName] = useState("");
+  const [importError, setImportError] = useState("");
   const itemsQuery = useQuery({ queryKey: ["career-items"], queryFn: () => repository.listCareerItems() });
   const factsQuery = useQuery({
     queryKey: ["career-facts", search, status],
@@ -392,7 +500,6 @@ export function CareerMemoryPage() {
   if (variantsQuery.isError) throw variantsQuery.error;
 
   const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
-  const itemFacts = selected ? facts.filter((fact) => fact.careerItemId === selected.id) : [];
   const counts = new Map<string, number>();
   for (const fact of facts) counts.set(fact.careerItemId, (counts.get(fact.careerItemId) ?? 0) + 1);
   const normalizeStatement = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -414,6 +521,69 @@ export function CareerMemoryPage() {
       }
     }
   }
+  const reviewReasonsByFact = new Map<string, string[]>();
+  const staleBefore = new Date();
+  staleBefore.setDate(staleBefore.getDate() - 180);
+  for (const fact of facts) {
+    const reasons: string[] = [];
+    if (extractNumericTokens(fact.statement).length) reasons.push("Contains a numeric claim");
+    if (fact.evidenceStatus === "needs_review" || !fact.lastReviewedDate) reasons.push("Not reviewed");
+    if (!fact.sourceNote.trim() || !fact.sourceReference.trim()) reasons.push("Missing source detail");
+    if ((statementCounts.get(normalizeStatement(fact.statement)) ?? 0) > 1) reasons.push("Possible duplicate");
+    if (!(usageByFact.get(fact.id)?.length ?? 0)) reasons.push("Never used in a resume");
+    if (fact.lastReviewedDate && new Date(`${fact.lastReviewedDate}T00:00:00`) < staleBefore) {
+      reasons.push("Review is over 180 days old");
+    }
+    if (variants.filter((variant) => variant.sourceFactIds.includes(fact.id)).length > 1) {
+      reasons.push("Multiple approved variants");
+    }
+    reviewReasonsByFact.set(fact.id, reasons);
+  }
+  const itemFacts = selected
+    ? facts.filter(
+        (fact) => fact.careerItemId === selected.id && (!reviewOnly || reviewReasonsByFact.get(fact.id)?.length),
+      )
+    : [];
+  const selectedReviewCount = selected
+    ? facts.filter(
+        (fact) => fact.careerItemId === selected.id && (reviewReasonsByFact.get(fact.id)?.length ?? 0) > 0,
+      ).length
+    : 0;
+
+  const chooseEvidenceFile = async () => {
+    setImportError("");
+    try {
+      const path = await open({
+        multiple: false,
+        filters: [{ name: "Local evidence", extensions: ["md", "json", "toml", "txt"] }],
+      });
+      if (typeof path !== "string") return;
+      const file = await invoke<LocalEvidenceFile>("read_evidence_file", { path });
+      const candidates = extractEvidenceCandidates(file);
+      setImportFileName(file.fileName);
+      setImportCandidates(candidates);
+      if (!candidates.length) setImportError("No deterministic evidence candidates were found in this file.");
+    } catch (caught) {
+      setImportCandidates([]);
+      setImportError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const saveApprovedImports = async () => {
+    if (!selected) return;
+    const approved = importCandidates.filter((candidate) => candidate.approved && !candidate.rejected);
+    if (!approved.length) return;
+    try {
+      await Promise.all(
+        approved.map((candidate) => repository.saveCareerFact(approvedCandidateToFact(candidate, selected.id))),
+      );
+      setImportCandidates([]);
+      setImportFileName("");
+      await invalidate();
+    } catch (caught) {
+      setImportError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
 
   const moveItem = (item: CareerItem, direction: -1 | 1) => {
     const ordered = [...items];
@@ -529,6 +699,7 @@ export function CareerMemoryPage() {
             <div className="grid grid-cols-[1fr_220px] gap-3">
               <input
                 className="field"
+                data-search-input
                 placeholder="Search facts, skill tags, or role tags"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
@@ -542,6 +713,14 @@ export function CareerMemoryPage() {
                 ))}
               </select>
             </div>
+            <label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={reviewOnly}
+                onChange={(event) => setReviewOnly(event.target.checked)}
+              />
+              Review queue only {selected ? `(${selectedReviewCount})` : ""}
+            </label>
           </div>
 
           {!selected ? (
@@ -597,6 +776,78 @@ export function CareerMemoryPage() {
                   <Plus size={15} aria-hidden="true" />
                   Add fact
                 </button>
+              </div>
+
+              <div className="panel p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-semibold text-slate-950">Import local evidence</h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      Inspect a selected text or manifest file. Nothing is executed or saved without approval.
+                    </p>
+                  </div>
+                  <button className="button" type="button" onClick={chooseEvidenceFile}>
+                    <FileInput size={15} aria-hidden="true" />
+                    Choose file
+                  </button>
+                </div>
+                {importError ? <InlineError message={importError} /> : null}
+                {importCandidates.length ? (
+                  <div className="mt-4 space-y-3">
+                    <p className="text-sm font-semibold text-slate-700">Candidates from {importFileName}</p>
+                    {importCandidates.map((candidate) => (
+                      <div key={candidate.id} className="rounded-md border border-slate-200 p-3">
+                        <p className={candidate.rejected ? "text-sm text-slate-400 line-through" : "text-sm text-slate-800"}>
+                          {candidate.statement}
+                        </p>
+                        <p className="mt-1 break-all text-xs text-slate-500">{candidate.sourceReference}</p>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            className={candidate.approved && !candidate.rejected ? "button button-primary" : "button"}
+                            type="button"
+                            onClick={() =>
+                              setImportCandidates((current) =>
+                                current.map((value) =>
+                                  value.id === candidate.id
+                                    ? { ...value, approved: true, rejected: false }
+                                    : value,
+                                ),
+                              )
+                            }
+                          >
+                            <Check size={15} aria-hidden="true" />
+                            Approve
+                          </button>
+                          <button
+                            className={candidate.rejected ? "button button-danger" : "button"}
+                            type="button"
+                            onClick={() =>
+                              setImportCandidates((current) =>
+                                current.map((value) =>
+                                  value.id === candidate.id
+                                    ? { ...value, approved: false, rejected: true }
+                                    : value,
+                                ),
+                              )
+                            }
+                          >
+                            <X size={15} aria-hidden="true" />
+                            Reject
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      className="button button-primary"
+                      type="button"
+                      disabled={!importCandidates.some((candidate) => candidate.approved && !candidate.rejected)}
+                      onClick={saveApprovedImports}
+                    >
+                      <Save size={15} aria-hidden="true" />
+                      Save approved facts
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-3">
@@ -662,6 +913,7 @@ export function CareerMemoryPage() {
                     duplicate={(statementCounts.get(normalizeStatement(fact.statement)) ?? 0) > 1}
                     usage={usageByFact.get(fact.id) ?? []}
                     variants={variants.filter((variant) => variant.sourceFactIds.includes(fact.id))}
+                    reviewReasons={reviewReasonsByFact.get(fact.id) ?? []}
                   />
                 ))}
               </div>

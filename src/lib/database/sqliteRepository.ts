@@ -1,17 +1,22 @@
 import type Database from "@tauri-apps/plugin-sql";
+import { invoke } from "@tauri-apps/api/core";
 import type {
   AppSettings,
+  ApplicationRecord,
   ApprovedBulletVariant,
   BackupPayload,
   CareerFact,
   CareerItem,
   DashboardMetrics,
+  EvaluationSummary,
   FactUsage,
   Job,
+  MigrationEvent,
   Profile,
   ResumeVersion,
   Skill,
 } from "../../types/domain";
+import { PROMPT_VERSIONS } from "../ai/prompts";
 import { createId, nowIso } from "../utils";
 import {
   emptyGenerationMetadata,
@@ -106,6 +111,11 @@ function mapCareerFact(row: Row): CareerFact {
     statement: asString(row.statement),
     evidenceStatus: row.evidence_status as CareerFact["evidenceStatus"],
     sourceNote: asString(row.source_note),
+    sourceType: (asString(row.source_type) || "user_statement") as CareerFact["sourceType"],
+    sourceReference: asString(row.source_reference),
+    verificationDate: asString(row.verification_date),
+    lastReviewedDate: asString(row.last_reviewed_date),
+    notes: asString(row.notes),
     skillTags: parseArray(row.skill_tags_json),
     roleTags: parseArray(row.role_tags_json),
     metricTokens: parseArray(row.metric_tokens_json),
@@ -155,6 +165,16 @@ function mapResume(row: Row): ResumeVersion {
       (asString(row.generation_provider) || "deterministic") as ResumeVersion["generationProvider"],
     generationModel: asString(row.generation_model),
     promptVersion: asString(row.prompt_version),
+    promptVersionsJson: {
+      ...PROMPT_VERSIONS,
+      ...(parseJson(row.prompt_versions_json, {}) as Partial<ResumeVersion["promptVersionsJson"]>),
+    },
+    layoutProfileId:
+      (asString(row.layout_profile_id) || "general-software-engineer") as ResumeVersion["layoutProfileId"],
+    templateSettingsJson: {
+      ...defaultSettings.templateSettings,
+      ...(parseJson(row.template_settings_json, {}) as Partial<ResumeVersion["templateSettingsJson"]>),
+    },
     generationMetadataJson: normalizeGenerationMetadata(
       parseJson(row.generation_metadata_json, emptyGenerationMetadata),
     ),
@@ -163,6 +183,58 @@ function mapResume(row: Row): ResumeVersion {
       : null,
     createdAt: asString(row.created_at),
     updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapApplication(row: Row): ApplicationRecord {
+  return {
+    id: asString(row.id),
+    jobId: asString(row.job_id),
+    company: asString(row.company),
+    role: asString(row.role),
+    jobUrl: asString(row.job_url),
+    resumeVersionId: asString(row.resume_version_id),
+    status: row.status as ApplicationRecord["status"],
+    appliedDate: asString(row.applied_date),
+    referralContact: asString(row.referral_contact),
+    notes: asString(row.notes),
+    createdAt: asString(row.created_at),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapEvaluation(row: Row): EvaluationSummary {
+  return {
+    id: asString(row.id),
+    fixtureId: asString(row.fixture_id),
+    fixtureName: asString(row.fixture_name),
+    mode: row.mode as EvaluationSummary["mode"],
+    provider: row.provider as EvaluationSummary["provider"],
+    model: asString(row.model),
+    promptVersions: {
+      ...PROMPT_VERSIONS,
+      ...(parseJson(row.prompt_versions_json, {}) as Partial<EvaluationSummary["promptVersions"]>),
+    },
+    roleProfileId: row.role_profile_id as EvaluationSummary["roleProfileId"],
+    templateId: row.template_id as EvaluationSummary["templateId"],
+    metrics: parseJson(row.metrics_json, {}) as EvaluationSummary["metrics"],
+    selectedCareerItemIds: parseArray(row.selected_career_item_ids_json),
+    selectedFactIds: parseArray(row.selected_fact_ids_json),
+    validationIssues: normalizeValidationIssues(parseJson(row.validation_issues_json, [])),
+    preferred: asBool(row.preferred),
+    createdAt: asString(row.created_at),
+  };
+}
+
+function mapMigrationEvent(row: Row): MigrationEvent {
+  return {
+    id: Number(row.id ?? 0),
+    fromVersion: Number(row.from_version ?? 0),
+    toVersion: Number(row.to_version ?? 0),
+    success: asBool(row.success),
+    backupPath: asString(row.backup_path),
+    errorCode: asString(row.error_code),
+    createdAt: asString(row.created_at),
   };
 }
 
@@ -193,19 +265,65 @@ export class SqliteRepository implements AppRepository {
     await this.db.execute(
       "CREATE TABLE IF NOT EXISTS schema_migrations (id INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL)",
     );
-    for (const migration of migrations) {
-      const existing = await this.db.select<Row[]>("SELECT id FROM schema_migrations WHERE id = $1", [
-        migration.id,
-      ]);
-      if (existing.length > 0) {
-        continue;
+    const applied = await this.db.select<Array<{ id: number }>>("SELECT id FROM schema_migrations");
+    const appliedIds = new Set(applied.map((row) => Number(row.id)));
+    const pending = migrations.filter((migration) => !appliedIds.has(migration.id));
+    const fromVersion = Math.max(0, ...appliedIds);
+    let backupPath = "";
+    if (pending.length > 0 && fromVersion > 0) {
+      await this.db.execute("PRAGMA wal_checkpoint(FULL)");
+      const databases = await this.db.select<Array<{ file: string }>>("PRAGMA database_list");
+      const databasePath = databases.find((database) => database.file)?.file ?? "";
+      if (!databasePath) {
+        throw new Error("migration_backup_missing|The database path could not be resolved before migration.");
       }
-      for (const statement of splitStatements(migration.sql)) {
-        await this.db.execute(statement);
+      backupPath = await invoke<string>("backup_database_before_migration", {
+        path: databasePath,
+        targetVersion: pending.at(-1)?.id ?? fromVersion,
+      });
+    }
+    try {
+      await this.db.execute("BEGIN IMMEDIATE");
+      for (const migration of pending) {
+        for (const statement of splitStatements(migration.sql)) {
+          await this.db.execute(statement);
+        }
+        await this.db.execute(
+          "INSERT OR IGNORE INTO schema_migrations (id, name, applied_at) VALUES ($1, $2, $3)",
+          [migration.id, migration.name, nowIso()],
+        );
       }
+      await this.db.execute("COMMIT");
+    } catch (caught) {
+      await this.db.execute("ROLLBACK").catch(() => undefined);
+      const message = caught instanceof Error ? caught.message : String(caught);
+      try {
+        await this.db.execute(`CREATE TABLE IF NOT EXISTS migration_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          from_version INTEGER NOT NULL,
+          to_version INTEGER NOT NULL,
+          success INTEGER NOT NULL,
+          backup_path TEXT NOT NULL,
+          error_code TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )`);
+        await this.db.execute(
+          `INSERT INTO migration_events (from_version, to_version, success, backup_path, error_code, created_at)
+           VALUES ($1,$2,0,$3,'migration_failed',$4)`,
+          [fromVersion, pending.at(-1)?.id ?? fromVersion, backupPath, nowIso()],
+        );
+      } catch {
+        // The original migration error is more useful if even diagnostics cannot be recorded.
+      }
+      throw new Error(
+        `migration_failed|Database migration failed without replacing existing data. Backup: ${backupPath || "not required"}. ${message}`,
+      );
+    }
+    if (pending.length > 0) {
       await this.db.execute(
-        "INSERT OR IGNORE INTO schema_migrations (id, name, applied_at) VALUES ($1, $2, $3)",
-        [migration.id, migration.name, nowIso()],
+        `INSERT INTO migration_events (from_version, to_version, success, backup_path, error_code, created_at)
+         VALUES ($1,$2,1,$3,'',$4)`,
+        [fromVersion, pending.at(-1)?.id ?? fromVersion, backupPath, nowIso()],
       );
     }
     const settings = await this.db.select<Row[]>("SELECT id FROM app_settings WHERE id = 'default'");
@@ -235,6 +353,9 @@ export class SqliteRepository implements AppRepository {
   }
 
   async resetSampleData() {
+    await this.db.execute("DELETE FROM applications");
+    await this.db.execute("DELETE FROM evaluation_summaries");
+    await this.db.execute("DELETE FROM approved_bullet_variants");
     await this.db.execute("DELETE FROM resume_versions");
     await this.db.execute("DELETE FROM jobs");
     await this.db.execute("DELETE FROM career_facts");
@@ -399,6 +520,11 @@ export class SqliteRepository implements AppRepository {
       statement: fact.statement,
       evidenceStatus: fact.evidenceStatus ?? mapped?.evidenceStatus ?? "user_provided",
       sourceNote: fact.sourceNote ?? mapped?.sourceNote ?? "",
+      sourceType: fact.sourceType ?? mapped?.sourceType ?? "user_statement",
+      sourceReference: fact.sourceReference ?? mapped?.sourceReference ?? "",
+      verificationDate: fact.verificationDate ?? mapped?.verificationDate ?? "",
+      lastReviewedDate: fact.lastReviewedDate ?? mapped?.lastReviewedDate ?? "",
+      notes: fact.notes ?? mapped?.notes ?? "",
       skillTags: fact.skillTags ?? mapped?.skillTags ?? [],
       roleTags: fact.roleTags ?? mapped?.roleTags ?? [],
       metricTokens: fact.metricTokens ?? mapped?.metricTokens ?? [],
@@ -408,10 +534,17 @@ export class SqliteRepository implements AppRepository {
       updatedAt: now,
     };
     await this.db.execute(
-      `INSERT INTO career_facts VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      `INSERT INTO career_facts (
+        id, career_item_id, statement, evidence_status, source_note, skill_tags_json,
+        role_tags_json, metric_tokens_json, importance, enabled, created_at, updated_at,
+        source_type, source_reference, verification_date, last_reviewed_date, notes
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        ON CONFLICT(id) DO UPDATE SET
         career_item_id = excluded.career_item_id, statement = excluded.statement,
         evidence_status = excluded.evidence_status, source_note = excluded.source_note,
+        source_type = excluded.source_type, source_reference = excluded.source_reference,
+        verification_date = excluded.verification_date, last_reviewed_date = excluded.last_reviewed_date,
+        notes = excluded.notes,
         skill_tags_json = excluded.skill_tags_json, role_tags_json = excluded.role_tags_json,
         metric_tokens_json = excluded.metric_tokens_json, importance = excluded.importance,
         enabled = excluded.enabled, updated_at = excluded.updated_at`,
@@ -428,6 +561,11 @@ export class SqliteRepository implements AppRepository {
         saved.enabled ? 1 : 0,
         saved.createdAt,
         saved.updatedAt,
+        saved.sourceType,
+        saved.sourceReference,
+        saved.verificationDate,
+        saved.lastReviewedDate,
+        saved.notes,
       ],
     );
     return saved;
@@ -558,6 +696,11 @@ export class SqliteRepository implements AppRepository {
       generationProvider: resume.generationProvider ?? mapped?.generationProvider ?? "deterministic",
       generationModel: resume.generationModel ?? mapped?.generationModel ?? "",
       promptVersion: resume.promptVersion ?? mapped?.promptVersion ?? "",
+      promptVersionsJson: resume.promptVersionsJson ?? mapped?.promptVersionsJson ?? PROMPT_VERSIONS,
+      layoutProfileId:
+        resume.layoutProfileId ?? mapped?.layoutProfileId ?? "general-software-engineer",
+      templateSettingsJson:
+        resume.templateSettingsJson ?? mapped?.templateSettingsJson ?? defaultSettings.templateSettings,
       generationMetadataJson:
         resume.generationMetadataJson ?? mapped?.generationMetadataJson ?? emptyGenerationMetadata,
       deterministicBaselineJson:
@@ -569,8 +712,9 @@ export class SqliteRepository implements AppRepository {
       `INSERT INTO resume_versions (
         id, job_id, name, template_id, content_json, validation_json, status, last_export_path,
         created_at, updated_at, parent_resume_version_id, generation_provider, generation_model,
-        prompt_version, generation_metadata_json, deterministic_baseline_json
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        prompt_version, generation_metadata_json, deterministic_baseline_json,
+        prompt_versions_json, layout_profile_id, template_settings_json
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
        ON CONFLICT(id) DO UPDATE SET
         job_id = excluded.job_id, name = excluded.name, template_id = excluded.template_id,
         content_json = excluded.content_json, validation_json = excluded.validation_json,
@@ -579,6 +723,9 @@ export class SqliteRepository implements AppRepository {
         generation_provider = excluded.generation_provider,
         generation_model = excluded.generation_model,
         prompt_version = excluded.prompt_version,
+        prompt_versions_json = excluded.prompt_versions_json,
+        layout_profile_id = excluded.layout_profile_id,
+        template_settings_json = excluded.template_settings_json,
         generation_metadata_json = excluded.generation_metadata_json,
         deterministic_baseline_json = excluded.deterministic_baseline_json,
         updated_at = excluded.updated_at`,
@@ -599,6 +746,9 @@ export class SqliteRepository implements AppRepository {
         saved.promptVersion,
         JSON.stringify(saved.generationMetadataJson),
         saved.deterministicBaselineJson ? JSON.stringify(saved.deterministicBaselineJson) : null,
+        JSON.stringify(saved.promptVersionsJson),
+        saved.layoutProfileId,
+        JSON.stringify(saved.templateSettingsJson),
       ],
     );
     return saved;
@@ -719,6 +869,150 @@ export class SqliteRepository implements AppRepository {
     };
   }
 
+  async listApplications() {
+    return (await this.db.select<Row[]>("SELECT * FROM applications ORDER BY updated_at DESC")).map(
+      mapApplication,
+    );
+  }
+
+  async getApplication(id: string) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM applications WHERE id = $1", [id]);
+    return rows[0] ? mapApplication(rows[0]) : null;
+  }
+
+  async saveApplication(
+    application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">,
+  ) {
+    const existing = application.id ? await this.getApplication(application.id) : null;
+    const now = nowIso();
+    const status = application.status ?? existing?.status ?? "preparing";
+    const saved: ApplicationRecord = {
+      id: existing?.id ?? application.id ?? createId("application"),
+      jobId: application.jobId ?? existing?.jobId ?? "",
+      company: application.company,
+      role: application.role,
+      jobUrl: application.jobUrl ?? existing?.jobUrl ?? "",
+      resumeVersionId: application.resumeVersionId ?? existing?.resumeVersionId ?? "",
+      status,
+      appliedDate:
+        application.appliedDate?.trim() ||
+        existing?.appliedDate ||
+        (status === "applied" ? now.slice(0, 10) : ""),
+      referralContact: application.referralContact ?? existing?.referralContact ?? "",
+      notes: application.notes ?? existing?.notes ?? "",
+      createdAt: existing?.createdAt ?? application.createdAt ?? now,
+      updatedAt: now,
+    };
+    await this.db.execute(
+      `INSERT INTO applications (
+        id, job_id, company, role, job_url, resume_version_id, status, applied_date,
+        referral_contact, notes, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      ON CONFLICT(id) DO UPDATE SET
+        job_id = excluded.job_id, company = excluded.company, role = excluded.role,
+        job_url = excluded.job_url, resume_version_id = excluded.resume_version_id,
+        status = excluded.status, applied_date = excluded.applied_date,
+        referral_contact = excluded.referral_contact, notes = excluded.notes,
+        updated_at = excluded.updated_at`,
+      [
+        saved.id,
+        saved.jobId,
+        saved.company,
+        saved.role,
+        saved.jobUrl,
+        saved.resumeVersionId,
+        saved.status,
+        saved.appliedDate,
+        saved.referralContact,
+        saved.notes,
+        saved.createdAt,
+        saved.updatedAt,
+      ],
+    );
+    return saved;
+  }
+
+  async deleteApplication(id: string) {
+    await this.db.execute("DELETE FROM applications WHERE id = $1", [id]);
+  }
+
+  async listEvaluationSummaries() {
+    return (
+      await this.db.select<Row[]>("SELECT * FROM evaluation_summaries ORDER BY created_at DESC")
+    ).map(mapEvaluation);
+  }
+
+  async saveEvaluationSummary(summary: EvaluationSummary) {
+    await this.db.execute(
+      `INSERT INTO evaluation_summaries (
+        id, fixture_id, fixture_name, mode, provider, model, prompt_versions_json,
+        role_profile_id, template_id, metrics_json, selected_career_item_ids_json,
+        selected_fact_ids_json, validation_issues_json, preferred, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ON CONFLICT(id) DO UPDATE SET
+        metrics_json = excluded.metrics_json,
+        validation_issues_json = excluded.validation_issues_json,
+        preferred = excluded.preferred`,
+      [
+        summary.id,
+        summary.fixtureId,
+        summary.fixtureName,
+        summary.mode,
+        summary.provider,
+        summary.model,
+        JSON.stringify(summary.promptVersions),
+        summary.roleProfileId,
+        summary.templateId,
+        JSON.stringify(summary.metrics),
+        JSON.stringify(summary.selectedCareerItemIds),
+        JSON.stringify(summary.selectedFactIds),
+        JSON.stringify(summary.validationIssues),
+        summary.preferred ? 1 : 0,
+        summary.createdAt,
+      ],
+    );
+    return summary;
+  }
+
+  async markEvaluationPreferred(id: string) {
+    const rows = await this.db.select<Array<{ fixture_id: string }>>(
+      "SELECT fixture_id FROM evaluation_summaries WHERE id = $1",
+      [id],
+    );
+    const fixtureId = rows[0]?.fixture_id;
+    if (!fixtureId) return;
+    await this.db.execute("UPDATE evaluation_summaries SET preferred = 0 WHERE fixture_id = $1", [fixtureId]);
+    await this.db.execute("UPDATE evaluation_summaries SET preferred = 1 WHERE id = $1", [id]);
+  }
+
+  async listMigrationEvents() {
+    return (await this.db.select<Row[]>("SELECT * FROM migration_events ORDER BY id")).map(
+      mapMigrationEvent,
+    );
+  }
+
+  async getDatabaseStatus() {
+    const versions = await this.db.select<Array<{ id: number }>>(
+      "SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1",
+    );
+    const events = await this.listMigrationEvents();
+    try {
+      await this.db.execute("CREATE TEMP TABLE IF NOT EXISTS careercompiler_write_probe (id INTEGER)");
+      await this.db.execute("DROP TABLE careercompiler_write_probe");
+      return {
+        writable: true,
+        schemaVersion: Number(versions[0]?.id ?? 0),
+        latestMigration: events.at(-1) ?? null,
+      };
+    } catch {
+      return {
+        writable: false,
+        schemaVersion: Number(versions[0]?.id ?? 0),
+        latestMigration: events.at(-1) ?? null,
+      };
+    }
+  }
+
   async getSettings() {
     const rows = await this.db.select<Row[]>("SELECT * FROM app_settings WHERE id = 'default'");
     if (!rows[0]) {
@@ -734,26 +1028,42 @@ export class SqliteRepository implements AppRepository {
         ...defaultSettings.tailoringDefaults,
         ...(parseJson(rows[0].tailoring_defaults_json, {}) as Partial<AppSettings["tailoringDefaults"]>),
       },
+      templateSettings: {
+        ...defaultSettings.templateSettings,
+        ...(parseJson(rows[0].template_settings_json, {}) as Partial<AppSettings["templateSettings"]>),
+      },
+      developerMode: asBool(rows[0].developer_mode),
+      uiState: {
+        ...defaultSettings.uiState,
+        ...(parseJson(rows[0].ui_state_json, {}) as Partial<AppSettings["uiState"]>),
+      },
     };
   }
 
   async saveSettings(settings: AppSettings) {
     await this.db.execute(
       `INSERT INTO app_settings (
-        id, ai_provider, model_name, default_template_id, default_export_directory, tailoring_defaults_json
-      ) VALUES ('default', $1, $2, $3, $4, $5)
+        id, ai_provider, model_name, default_template_id, default_export_directory,
+        tailoring_defaults_json, template_settings_json, developer_mode, ui_state_json
+      ) VALUES ('default', $1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT(id) DO UPDATE SET
         ai_provider = excluded.ai_provider,
         model_name = excluded.model_name,
         default_template_id = excluded.default_template_id,
         default_export_directory = excluded.default_export_directory,
-        tailoring_defaults_json = excluded.tailoring_defaults_json`,
+        tailoring_defaults_json = excluded.tailoring_defaults_json,
+        template_settings_json = excluded.template_settings_json,
+        developer_mode = excluded.developer_mode,
+        ui_state_json = excluded.ui_state_json`,
       [
         settings.aiProvider,
         settings.modelName,
         settings.defaultTemplateId,
         settings.defaultExportDirectory,
         JSON.stringify(settings.tailoringDefaults),
+        JSON.stringify(settings.templateSettings),
+        settings.developerMode ? 1 : 0,
+        JSON.stringify(settings.uiState),
       ],
     );
     return settings;
@@ -768,30 +1078,45 @@ export class SqliteRepository implements AppRepository {
       jobs: await this.listJobs(),
       resumes: await this.listResumeVersions(),
       approvedVariants: await this.listApprovedBulletVariants(),
+      applications: await this.listApplications(),
+      evaluationSummaries: await this.listEvaluationSummaries(),
       settings: await this.getSettings(),
       exportedAt: nowIso(),
-      schemaVersion: 2,
+      schemaVersion: 3,
     };
   }
 
-  async importBackup(payload: BackupPayload) {
-    await this.resetSampleData();
-    await this.db.execute("DELETE FROM resume_versions");
-    await this.db.execute("DELETE FROM jobs");
-    await this.db.execute("DELETE FROM career_facts");
-    await this.db.execute("DELETE FROM career_items");
-    await this.db.execute("DELETE FROM skills");
-    await this.db.execute("DELETE FROM profile");
-    if (payload.profile) {
-      await this.saveProfile(payload.profile);
+  async importBackup(payload: BackupPayload, mode: "replace" | "merge" = "replace") {
+    await this.db.execute("BEGIN IMMEDIATE");
+    try {
+      if (mode === "replace") {
+        await this.db.execute("DELETE FROM applications");
+        await this.db.execute("DELETE FROM evaluation_summaries");
+        await this.db.execute("DELETE FROM approved_bullet_variants");
+        await this.db.execute("DELETE FROM resume_versions");
+        await this.db.execute("DELETE FROM jobs");
+        await this.db.execute("DELETE FROM career_facts");
+        await this.db.execute("DELETE FROM career_items");
+        await this.db.execute("DELETE FROM skills");
+        await this.db.execute("DELETE FROM profile");
+      }
+      if (payload.profile) await this.saveProfile(payload.profile);
+      for (const item of payload.careerItems) await this.saveCareerItem(item);
+      for (const fact of payload.careerFacts) await this.saveCareerFact(fact);
+      for (const skill of payload.skills) await this.saveSkill(skill);
+      for (const job of payload.jobs) await this.saveJob(job);
+      for (const resume of payload.resumes) await this.saveResumeVersion(resume);
+      for (const variant of payload.approvedVariants ?? []) await this.saveApprovedBulletVariant(variant);
+      for (const application of payload.applications ?? []) await this.saveApplication(application);
+      for (const summary of payload.evaluationSummaries ?? []) await this.saveEvaluationSummary(summary);
+      await this.saveSettings(payload.settings);
+      await this.db.execute("COMMIT");
+    } catch (caught) {
+      await this.db.execute("ROLLBACK").catch(() => undefined);
+      throw new Error(
+        `backup_restore_failed|Backup restore failed and changes were rolled back. ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
     }
-    for (const item of payload.careerItems) await this.saveCareerItem(item);
-    for (const fact of payload.careerFacts) await this.saveCareerFact(fact);
-    for (const skill of payload.skills) await this.saveSkill(skill);
-    for (const job of payload.jobs) await this.saveJob(job);
-    for (const resume of payload.resumes) await this.saveResumeVersion(resume);
-    for (const variant of payload.approvedVariants ?? []) await this.saveApprovedBulletVariant(variant);
-    await this.saveSettings(payload.settings);
   }
 
   private async countSeedRows() {

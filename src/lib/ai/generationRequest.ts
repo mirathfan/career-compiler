@@ -22,6 +22,9 @@ export function sectionOrderForPreset(
   if (preset === "experience-first") {
     return ["summary", "experience", "projects", "education", "skills"];
   }
+  if (preset === "mir-resume") {
+    return ["projects", "experience", "education", "skills"];
+  }
   return ["summary", "education", "experience", "projects", "skills"];
 }
 

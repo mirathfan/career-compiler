@@ -5,6 +5,9 @@ import "./index.css";
 import { App } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RepositoryProvider } from "./lib/database/RepositoryProvider";
+import { initializeWindowState } from "./lib/desktop/windowState";
+
+void initializeWindowState();
 
 const queryClient = new QueryClient({
   defaultOptions: {

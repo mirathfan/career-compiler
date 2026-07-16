@@ -167,10 +167,25 @@ fn openai_status_error(status: StatusCode, body: &str) -> String {
         StatusCode::TOO_MANY_REQUESTS => {
             "rate_limit|OpenAI rate limit reached. Retry after a short delay.".to_string()
         }
-        StatusCode::BAD_REQUEST => format!(
-            "structured_request_rejected|OpenAI rejected the structured request{}.",
-            code.map(|value| format!(" ({value})")).unwrap_or_default()
-        ),
+        StatusCode::BAD_REQUEST => {
+            let safe_code = code.unwrap_or_default();
+            if safe_code.contains("model") || safe_code.contains("not_found") {
+                "unsupported_model|The configured OpenAI model is unavailable or unsupported."
+                    .to_string()
+            } else if safe_code.contains("schema") || safe_code.contains("format") {
+                "schema_rejection|OpenAI rejected the structured response schema.".to_string()
+            } else {
+                let code_suffix = if safe_code.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({safe_code})")
+                };
+                format!(
+                    "structured_request_rejected|OpenAI rejected the structured request{}.",
+                    code_suffix
+                )
+            }
+        }
         _ if status.is_server_error() => {
             "provider_unavailable|OpenAI is temporarily unavailable. Retry later.".to_string()
         }
@@ -250,7 +265,8 @@ mod tests {
         let body =
             r#"{"error":{"code":"invalid_schema","message":"contact@example.com sk-secret"}}"#;
         let mapped = openai_status_error(StatusCode::BAD_REQUEST, body);
-        assert!(mapped.contains("invalid_schema"));
+        assert!(mapped.starts_with("schema_rejection|"));
+        assert!(!mapped.contains("invalid_schema"));
         assert!(!mapped.contains("contact@example.com"));
         assert!(!mapped.contains("sk-secret"));
     }

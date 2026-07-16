@@ -1,10 +1,13 @@
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import type { ResumeBullet, ResumeCareerItemSection, TailoredResume } from "../types/domain";
 
 interface ResumeEditorStore {
   resume: TailoredResume | null;
   deterministicBaseline: TailoredResume | null;
   history: TailoredResume[];
+  future: TailoredResume[];
+  dirty: boolean;
   setResume: (resume: TailoredResume) => void;
   setReviewDraft: (resume: TailoredResume, baseline: TailoredResume) => void;
   applyResume: (resume: TailoredResume) => void;
@@ -21,6 +24,9 @@ interface ResumeEditorStore {
   replaceSection: (careerItemId: string, replacement: ResumeCareerItemSection) => void;
   approveWarning: (code: string) => void;
   undo: () => void;
+  redo: () => void;
+  markSaved: () => void;
+  clearDraft: () => void;
 }
 
 function clone<T>(value: T): T {
@@ -54,20 +60,24 @@ function update(
   if (!state.resume) return state;
   const next = clone(state.resume);
   mutate(next);
-  return { resume: next, history: [...state.history, state.resume] };
+  return { resume: next, history: [...state.history, state.resume], future: [], dirty: true };
 }
 
-export const useResumeEditorStore = create<ResumeEditorStore>((set, get) => ({
+export const useResumeEditorStore = create<ResumeEditorStore>()(persist((set, get) => ({
   resume: null,
   deterministicBaseline: null,
   history: [],
-  setResume: (resume) => set({ resume: clone(resume), deterministicBaseline: null, history: [] }),
+  future: [],
+  dirty: false,
+  setResume: (resume) => set({ resume: clone(resume), deterministicBaseline: null, history: [], future: [], dirty: false }),
   setReviewDraft: (resume, baseline) =>
-    set({ resume: clone(resume), deterministicBaseline: clone(baseline), history: [] }),
+    set({ resume: clone(resume), deterministicBaseline: clone(baseline), history: [], future: [], dirty: false }),
   applyResume: (resume) =>
     set((state) => ({
       resume: clone(resume),
       history: state.resume ? [...state.history, state.resume] : state.history,
+      future: [],
+      dirty: true,
     })),
   updateBullet: (bulletId, text) =>
     set((state) =>
@@ -197,9 +207,27 @@ export const useResumeEditorStore = create<ResumeEditorStore>((set, get) => ({
       }),
     ),
   undo: () => {
-    const { history } = get();
+    const { history, resume, future } = get();
     const previous = history.at(-1);
     if (!previous) return;
-    set({ resume: previous, history: history.slice(0, -1) });
+    set({ resume: previous, history: history.slice(0, -1), future: resume ? [...future, resume] : future, dirty: true });
   },
+  redo: () => {
+    const { future, resume, history } = get();
+    const next = future.at(-1);
+    if (!next) return;
+    set({ resume: next, future: future.slice(0, -1), history: resume ? [...history, resume] : history, dirty: true });
+  },
+  markSaved: () => set({ dirty: false }),
+  clearDraft: () => set({ resume: null, deterministicBaseline: null, history: [], future: [], dirty: false }),
+}), {
+  name: "careercompiler-resume-draft-v3",
+  storage: createJSONStorage(() => localStorage),
+  partialize: (state) => ({
+    resume: state.resume,
+    deterministicBaseline: state.deterministicBaseline,
+    history: state.history.slice(-20),
+    future: state.future.slice(-20),
+    dirty: state.dirty,
+  }),
 }));

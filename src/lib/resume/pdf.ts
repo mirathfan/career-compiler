@@ -1,12 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { PDFDocument } from "pdf-lib";
-import type { TailoredResume } from "../../types/domain";
+import type { ResumeTemplateSettings, TailoredResume } from "../../types/domain";
 import { renderResumeLatex } from "./latex";
 
-export async function renderResumePdfBytes(resume: TailoredResume) {
+export async function renderResumePdfBytes(
+  resume: TailoredResume,
+  templateSettings?: ResumeTemplateSettings,
+) {
   try {
     const bytes = await invoke<number[]>("render_resume_latex", {
-      latexSource: renderResumeLatex(resume),
+      latexSource: renderResumeLatex(resume, templateSettings),
     });
     return Uint8Array.from(bytes);
   } catch (caught) {

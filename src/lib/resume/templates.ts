@@ -8,6 +8,12 @@ export interface ResumeTemplatePreset {
 }
 
 export const RESUME_TEMPLATES: Record<ResumeTemplateId, ResumeTemplatePreset> = {
+  "mir-resume": {
+    id: "mir-resume",
+    name: "Mir Resume",
+    sectionOrder: ["projects", "experience", "education", "skills"],
+    summaryLines: 0,
+  },
   "mir-standard": {
     id: "mir-standard",
     name: "Mir Standard",
@@ -23,5 +29,5 @@ export const RESUME_TEMPLATES: Record<ResumeTemplateId, ResumeTemplatePreset> = 
 };
 
 export function resolveResumeTemplate(id: string) {
-  return RESUME_TEMPLATES[id as ResumeTemplateId] ?? RESUME_TEMPLATES["mir-standard"];
+  return RESUME_TEMPLATES[id as ResumeTemplateId] ?? RESUME_TEMPLATES["mir-resume"];
 }

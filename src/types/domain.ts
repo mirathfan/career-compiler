@@ -5,7 +5,32 @@ export type AIProviderMode = "mock" | "openai";
 export type ResumeGenerationSource = "ai" | "deterministic" | "user";
 export type SummaryMode = "auto" | "always" | "never";
 export type NumberControl<T extends number> = "auto" | T;
-export type ResumeTemplateId = "mir-standard" | "ai-full-stack";
+export type ResumeTemplateId = "mir-resume" | "mir-standard" | "ai-full-stack";
+export type RoleProfileId =
+  | "full-stack-software-engineer"
+  | "ai-engineer"
+  | "forward-deployed-engineer"
+  | "mobile-engineer"
+  | "backend-engineer"
+  | "general-software-engineer";
+export type CareerFactSourceType =
+  | "user_statement"
+  | "repository"
+  | "readme"
+  | "test_result"
+  | "build_output"
+  | "deployment_result"
+  | "resume"
+  | "manually_verified";
+export type ApplicationStatus =
+  | "preparing"
+  | "ready"
+  | "applied"
+  | "interview"
+  | "rejected"
+  | "offer"
+  | "withdrawn";
+export type EvaluationMode = "ranking" | "mock" | "openai";
 export type AIRequestType =
   | "job_analysis"
   | "resume_plan"
@@ -54,6 +79,11 @@ export interface CareerFact {
   statement: string;
   evidenceStatus: EvidenceStatus;
   sourceNote: string;
+  sourceType: CareerFactSourceType;
+  sourceReference: string;
+  verificationDate: string;
+  lastReviewedDate: string;
+  notes: string;
   skillTags: string[];
   roleTags: string[];
   metricTokens: string[];
@@ -95,6 +125,9 @@ export interface ResumeVersion {
   generationProvider: AIProviderMode | "deterministic";
   generationModel: string;
   promptVersion: string;
+  promptVersionsJson: PromptVersionMap;
+  layoutProfileId: RoleProfileId;
+  templateSettingsJson: ResumeTemplateSettings;
   generationMetadataJson: GenerationMetadata;
   deterministicBaselineJson: TailoredResume | null;
   createdAt: string;
@@ -107,6 +140,48 @@ export interface AppSettings {
   defaultTemplateId: string;
   defaultExportDirectory: string;
   tailoringDefaults: TailoringControls;
+  templateSettings: ResumeTemplateSettings;
+  developerMode: boolean;
+  uiState: AppUiState;
+}
+
+export interface AppUiState {
+  lastVisitedRoute: string;
+  lastSearch: string;
+}
+
+export type ResumeFontFamily = "Helvetica Neue" | "Arial" | "Avenir Next" | "Times New Roman";
+
+export interface ResumeTemplateSettings {
+  fontFamily: ResumeFontFamily;
+  bodyFontSize: number;
+  headerFontSize: number;
+  sectionHeadingSize: number;
+  marginInches: number;
+  sectionSpacing: number;
+  bulletSpacing: number;
+  dateAlignment: "right" | "inline";
+  urlDisplay: "visible" | "labels";
+  educationOrdering: "graduate-first" | "chronological";
+  projectsExperienceOrdering: "projects-first" | "experience-first";
+  summaryAllowed: boolean;
+  maximumProjectCount: 2 | 3 | 4;
+  defaultBulletsPerProject: 1 | 2 | 3;
+}
+
+export interface RoleProfile {
+  id: RoleProfileId;
+  name: string;
+  sectionOrder: TailoredResume["sectionOrder"];
+  summaryMode: SummaryMode;
+  preferredProjectCount: 2 | 3 | 4;
+  bulletsPerItem: 1 | 2 | 3;
+  skillCategoryOrder: string[];
+  roleTags: string[];
+  emphasisTags: string[];
+  deEmphasisTags: string[];
+  preferredCareerItemIds: string[];
+  optionalCareerItemIds: string[];
 }
 
 export interface DashboardMetrics {
@@ -244,6 +319,7 @@ export interface TailoringControls {
   requiredFactIds: string[];
   excludedFactIds: string[];
   strictOnePage: boolean;
+  roleProfileId: RoleProfileId;
 }
 
 export interface ResumeConstraints {
@@ -340,6 +416,15 @@ export interface GenerationMetadata {
   compactionLog: string[];
 }
 
+export interface PromptVersionMap {
+  jobAnalysis: string;
+  planning: string;
+  resumeGeneration: string;
+  repair: string;
+  bulletRegeneration: string;
+  bulletShortening: string;
+}
+
 export interface AIProviderResult<T> {
   data: T;
   metadata: AIRequestMetadata;
@@ -392,6 +477,119 @@ export interface ResumeQualityCheck {
   count: number;
 }
 
+export interface ApplicationRecord {
+  id: string;
+  jobId: string;
+  company: string;
+  role: string;
+  jobUrl: string;
+  resumeVersionId: string;
+  status: ApplicationStatus;
+  appliedDate: string;
+  referralContact: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EvaluationMetrics {
+  expectedProjectsSelected: string[];
+  unexpectedProjectsSelected: string[];
+  requiredSkillsRepresented: string[];
+  missingRequiredSkills: string[];
+  highRelevanceFactsUsed: number;
+  unsupportedClaims: number;
+  unsupportedNumbers: number;
+  duplicateBullets: number;
+  bulletLengthViolations: number;
+  onePageSuccess: boolean;
+  validationSuccess: boolean;
+  lockedContentPreserved: boolean;
+  durationMs: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+}
+
+export interface EvaluationSummary {
+  id: string;
+  fixtureId: string;
+  fixtureName: string;
+  mode: EvaluationMode;
+  provider: AIProviderMode | "deterministic";
+  model: string;
+  promptVersions: PromptVersionMap;
+  roleProfileId: RoleProfileId;
+  templateId: ResumeTemplateId;
+  metrics: EvaluationMetrics;
+  selectedCareerItemIds: string[];
+  selectedFactIds: string[];
+  validationIssues: ValidationIssue[];
+  preferred: boolean;
+  createdAt: string;
+}
+
+export interface GenerationComparisonResult {
+  left: EvaluationSummary;
+  right: EvaluationSummary;
+  semanticDifferences: ResumeDiffEntry[];
+  careerItemDifferences: string[];
+  factDifferences: string[];
+}
+
+export interface MigrationEvent {
+  id: number;
+  fromVersion: number;
+  toVersion: number;
+  success: boolean;
+  backupPath: string;
+  errorCode: string;
+  createdAt: string;
+}
+
+export interface DatabaseStatus {
+  writable: boolean;
+  schemaVersion: number;
+  latestMigration: MigrationEvent | null;
+}
+
+export interface XeLaTeXDiagnostics {
+  available: boolean;
+  executablePath: string;
+  version: string;
+  lastSuccessfulCompilation: string;
+  lastCompilationDurationMs: number | null;
+  errorCode: string;
+}
+
+export interface FirstRunCheck {
+  id: string;
+  label: string;
+  status: "ready" | "optional" | "needs_attention" | "blocking";
+  detail: string;
+}
+
+export interface EvidenceImportCandidate {
+  id: string;
+  statement: string;
+  sourceType: CareerFactSourceType;
+  sourceReference: string;
+  skillTags: string[];
+  metricTokens: string[];
+  confidence: "deterministic" | "review";
+  approved: boolean;
+  rejected: boolean;
+}
+
+export interface BackupPreview {
+  schemaVersion: number;
+  exportedAt: string;
+  counts: Record<string, number>;
+  conflicts: string[];
+  valid: boolean;
+  errors: string[];
+}
+
 export interface BackupPayload {
   profile: Profile | null;
   careerItems: CareerItem[];
@@ -400,6 +598,8 @@ export interface BackupPayload {
   jobs: Job[];
   resumes: ResumeVersion[];
   approvedVariants: ApprovedBulletVariant[];
+  applications: ApplicationRecord[];
+  evaluationSummaries: EvaluationSummary[];
   settings: AppSettings;
   exportedAt: string;
   schemaVersion: number;

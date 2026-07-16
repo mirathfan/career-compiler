@@ -17,7 +17,7 @@ The request is parsed with Zod before it reaches a provider. Strict JSON Schemas
 
 Rust resolves the key from macOS Keychain or the development environment and sends a Responses API request with strict `text.format` JSON Schema. The command returns only structured output text plus safe duration and token fields. It maps authentication, network, rate-limit, structured-response, and server failures to stable codes without returning full provider response bodies.
 
-The centralized prompt version is `careercompiler-resume-v2.0.0`. Prompts prohibit invented history, metrics, dates, technologies, organizations, and impact. They require source IDs and concise role-specific language.
+Prompts are centralized in `src/lib/ai/prompts.ts` and have independent version identifiers for analysis, planning, generation, repair, bullet regeneration, and bullet shortening. Every generated resume stores the complete version map. Prompts prohibit invented history, metrics, dates, technologies, organizations, and impact; they require source IDs and concise role-specific language. See `docs/prompt-versions.md`.
 
 ## Generation Flow
 
@@ -34,3 +34,13 @@ The centralized prompt version is `careercompiler-resume-v2.0.0`. Prompts prohib
 No automated test calls a live OpenAI endpoint. Rust tests cover request serialization, response parsing, usage metadata, error mapping, and secret redaction. TypeScript fixtures cover valid, unsupported-number, missing-source, invented-skill, repairable, and non-repairable generation.
 
 Safe persisted metadata contains provider, model, request type, success, duration, returned token counts, error code, repair state, fallback state, and compaction actions. It does not contain keys, prompts, response bodies, or unnecessary contact data.
+
+## Explicit OpenAI Verification
+
+Developer mode in Settings exposes two actions and neither runs automatically. The connectivity action first reports masked key status, then sends one minimal strict Structured Outputs request and reports provider, configured model, duration, token usage, and a stable safe error category. Authentication, missing-key, rate-limit, unsupported-model, network, schema, and provider errors are mapped without returning the response body.
+
+The full-pipeline action requires a paid-request confirmation and runs one small development fixture through analysis, evidence selection, planning, generation, validation, and the normal guarded repair. The result is not persisted. Evaluation Lab provides a separately confirmed six-fixture live mode. Automated tests use mock or ranking-only modes and never require a key.
+
+## Role Profiles
+
+The selected role profile contributes ordered preferred and optional career items, section and summary defaults, bullet budgets, skill ordering, role tags, and emphasis/de-emphasis terms. It affects deterministic scoring and the generation constraints, but users can change the profile and every control before generation. A manual evidence override remains authoritative unless the fact is disabled, prohibited, or missing its career item.

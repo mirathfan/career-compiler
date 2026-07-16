@@ -1,17 +1,18 @@
 import type { AppSettings, CareerFact, CareerItem, Profile, Skill } from "../../types/domain";
+import { DEFAULT_MIR_TEMPLATE_SETTINGS } from "../resume/templateSettings";
 
 const seedTimestamp = "2026-07-15T00:00:00.000Z";
 
 export const defaultSettings: AppSettings = {
   aiProvider: "mock",
   modelName: "gpt-5.6",
-  defaultTemplateId: "mir-standard",
+  defaultTemplateId: "mir-resume",
   defaultExportDirectory: "",
   tailoringDefaults: {
     summaryMode: "auto",
     projectCount: 3,
     bulletsPerProject: 2,
-    sectionOrderPreset: "mir-standard",
+    sectionOrderPreset: "mir-resume",
     targetRoleCategory: "full-stack engineer",
     emphasisTags: [],
     excludedTags: [],
@@ -19,7 +20,11 @@ export const defaultSettings: AppSettings = {
     requiredFactIds: [],
     excludedFactIds: [],
     strictOnePage: true,
+    roleProfileId: "full-stack-software-engineer",
   },
+  templateSettings: DEFAULT_MIR_TEMPLATE_SETTINGS,
+  developerMode: false,
+  uiState: { lastVisitedRoute: "/dashboard", lastSearch: "" },
 };
 
 export const seedProfile: Profile = {
@@ -174,6 +179,11 @@ function fact(
     statement,
     evidenceStatus: "user_provided",
     sourceNote: "Seeded from user-provided CareerCompiler milestone notes.",
+    sourceType: "user_statement",
+    sourceReference: "CareerCompiler milestone notes",
+    verificationDate: "",
+    lastReviewedDate: "",
+    notes: "",
     skillTags,
     roleTags,
     metricTokens,

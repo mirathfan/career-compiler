@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,11 +7,13 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  ClipboardPaste,
   FileDown,
   Lock,
   LockOpen,
   RefreshCcw,
   RotateCcw,
+  Redo2,
   Save,
   Sparkles,
   Undo2,
@@ -29,20 +31,26 @@ import {
 } from "../../lib/ai/generationPipeline";
 import { createAIProvider } from "../../lib/ai/providerFactory";
 import { AIProviderError } from "../../lib/ai/provider";
-import { PROMPT_VERSION } from "../../lib/ai/prompts";
+import { PROMPT_VERSION, PROMPT_VERSIONS } from "../../lib/ai/prompts";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { defaultSettings } from "../../lib/database/seed";
 import { scoreCareerFacts, splitEvidence } from "../../lib/tailoring/evidence";
+import { controlsForRoleProfile, detectRoleProfile, ROLE_PROFILES } from "../../lib/tailoring/roleProfiles";
 import { createResumePlanFromRequest } from "../../lib/tailoring/plan";
 import {
   compactResumeWithGroundedShortening,
   estimateResumePageCount,
 } from "../../lib/resume/compaction";
 import { semanticResumeDiff } from "../../lib/resume/diff";
-import { countPdfPages, renderResumePdfBytes } from "../../lib/resume/pdf";
 import { defaultResumeFilename } from "../../lib/resume/filename";
 import { calculateResumeQuality } from "../../lib/resume/quality";
-import { hasBlockingValidationErrors, validateResumeClaims } from "../../lib/resume/validation";
+import {
+  hasBlockingValidationErrors,
+  missingRequiredContactFields,
+  validateResumeClaims,
+} from "../../lib/resume/validation";
+import { applyTemplateOrdering } from "../../lib/resume/templateSettings";
+import { parseClipboardJob } from "../../lib/jobs/clipboard";
 import { useResumeEditorStore } from "../../stores/resumeEditorStore";
 import type {
   AIRequestMetadata,
@@ -59,9 +67,12 @@ import type {
   TailoringControls,
   ValidationIssue,
 } from "../../types/domain";
-import { parseCsv } from "../../lib/utils";
+import { createId, nowIso, parseCsv } from "../../lib/utils";
 import { sampleJob } from "./sampleJob";
-import { ResumePreview } from "./ResumePreview";
+
+const ResumePreview = lazy(() =>
+  import("./ResumePreview").then((module) => ({ default: module.ResumePreview })),
+);
 
 type JobFormValues = typeof sampleJob;
 const emptyFacts: CareerFact[] = [];
@@ -71,7 +82,7 @@ const emptySkills: Skill[] = [];
 function StepIndicator({ step }: { step: number }) {
   return (
     <div className="flex gap-2">
-      {["Job input", "Analysis", "Evidence", "Review"].map((label, index) => (
+      {["Job", "Profile", "Evidence", "Review"].map((label, index) => (
         <div
           key={label}
           className={[
@@ -181,6 +192,27 @@ function ControlsPanel({ controls, onChange }: { controls: TailoringControls; on
   return (
     <div className="space-y-3">
       <label className="block text-sm font-semibold text-slate-700">
+        Role profile
+        <select
+          className="field mt-1"
+          value={controls.roleProfileId}
+          onChange={(event) =>
+            onChange(
+              controlsForRoleProfile(
+                event.target.value as TailoringControls["roleProfileId"],
+                controls,
+              ),
+            )
+          }
+        >
+          {Object.values(ROLE_PROFILES).map((profile) => (
+            <option key={profile.id} value={profile.id}>
+              {profile.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm font-semibold text-slate-700">
         Include summary
         <select className="field mt-1" value={controls.summaryMode} onChange={(event) => onChange({ ...controls, summaryMode: event.target.value as TailoringControls["summaryMode"] })}>
           <option value="auto">Auto</option><option value="always">Always</option><option value="never">Never</option>
@@ -268,6 +300,8 @@ export function TailorResumePage() {
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  const [jobPersisted, setJobPersisted] = useState(false);
+  const [applicationSaved, setApplicationSaved] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
   const [savedResume, setSavedResume] = useState<ResumeVersion | null>(null);
   const [generationRequest, setGenerationRequest] = useState<ResumeGenerationRequest | null>(null);
@@ -287,7 +321,11 @@ export function TailorResumePage() {
     updateBullet,
     moveBullet,
     undo,
+    redo,
     history,
+    future,
+    dirty,
+    markSaved,
     acceptBullet,
     rejectBullet,
     acceptAll,
@@ -316,6 +354,15 @@ export function TailorResumePage() {
     }
   }, [settingsQuery.data, controlsLoaded]);
 
+  useEffect(() => {
+    const warnBeforeClose = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warnBeforeClose);
+    return () => window.removeEventListener("beforeunload", warnBeforeClose);
+  }, [dirty]);
+
   const analyzeMutation = useMutation({
     mutationFn: async (values: JobFormValues) => {
       setError("");
@@ -324,21 +371,29 @@ export function TailorResumePage() {
         ...values,
         modelName: settings.modelName,
       });
-      const savedJob = await repository.saveJob({
+      const timestamp = nowIso();
+      const analyzedJob: Job = {
+        id: createId("job"),
         company: values.company || result.data.inferredCompany,
         roleTitle: values.roleTitle || result.data.inferredRoleTitle,
         sourceUrl: values.sourceUrl,
         rawDescription: values.rawDescription,
         analysisJson: result.data,
-      });
-      return { analysis: result.data, savedJob, metadata: result.metadata };
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      return { analysis: result.data, analyzedJob, metadata: result.metadata };
     },
-    onSuccess: ({ analysis: nextAnalysis, savedJob, metadata }) => {
+    onSuccess: ({ analysis: nextAnalysis, analyzedJob, metadata }) => {
       setAnalysis(nextAnalysis);
-      setJob(savedJob);
+      setJob(analyzedJob);
+      setJobPersisted(false);
+      setApplicationSaved(false);
+      setOverrides({});
+      const detected = detectRoleProfile(nextAnalysis);
+      setControls((current) => controlsForRoleProfile(detected, current));
       setCalls([metadata]);
       setStep(2);
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
     onError: (caught) => {
       if (caught instanceof AIProviderError) setCalls((current) => [...current, caught.metadata]);
@@ -352,8 +407,14 @@ export function TailorResumePage() {
   const profile = profileQuery.data ?? null;
   const settings = settingsQuery.data;
   const evidence = useMemo(
-    () => analysis ? splitEvidence(scoreCareerFacts(analysis, facts, items), overrides) : [],
-    [analysis, facts, items, overrides],
+    () =>
+      analysis
+        ? splitEvidence(
+            scoreCareerFacts(analysis, facts, items, ROLE_PROFILES[controls.roleProfileId]),
+            overrides,
+          )
+        : [],
+    [analysis, controls.roleProfileId, facts, items, overrides],
   );
   const selectedEvidence = evidence.filter((score) => score.selected && !controls.excludedFactIds.includes(score.fact.id));
   const validationIssues: ValidationIssue[] = resume && profile
@@ -386,15 +447,32 @@ export function TailorResumePage() {
       generationProvider: settings.aiProvider,
       generationModel: settings.modelName,
       promptVersion: PROMPT_VERSION,
+      promptVersionsJson: PROMPT_VERSIONS,
+      layoutProfileId: controls.roleProfileId,
+      templateSettingsJson: settings.templateSettings,
       generationMetadataJson: metadata,
       deterministicBaselineJson: baseline,
     });
     setSavedResume(saved);
+    markSaved();
     queryClient.invalidateQueries();
   };
 
+  const saveJobAndContinue = async () => {
+    if (!job) return;
+    try {
+      const saved = await repository.saveJob(job);
+      setJob(saved);
+      setJobPersisted(true);
+      setStep(3);
+      await queryClient.invalidateQueries();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
   const generateResume = async () => {
-    if (!analysis || !profile || !job || !settings) {
+    if (!analysis || !profile || !job || !settings || !jobPersisted) {
       setError("Seed or complete the profile before generating a resume.");
       return;
     }
@@ -493,8 +571,28 @@ export function TailorResumePage() {
       deterministicBaselineJson: deterministicBaseline,
     });
     setSavedResume(saved);
+    markSaved();
     queryClient.invalidateQueries();
   };
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      if (!event.metaKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "s" && step === 4) {
+        event.preventDefault();
+        void persistCurrent();
+      } else if (key === "z" && event.shiftKey) {
+        event.preventDefault();
+        redo();
+      } else if (key === "z") {
+        event.preventDefault();
+        undo();
+      }
+    };
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  });
 
   const regenerateContent = async (careerItemId: string, bulletId?: string) => {
     if (!generationRequest || !generationPlan || !settings || !resume || !profile) return;
@@ -552,6 +650,11 @@ export function TailorResumePage() {
 
   const exportResume = async () => {
     if (!resume || !profile || !job || !settings) return;
+    const missingContacts = missingRequiredContactFields(profile);
+    if (missingContacts.length) {
+      setError(`Complete the profile before export: ${missingContacts.join(", ")}.`);
+      return;
+    }
     if (hasBlockingValidationErrors(validationIssues)) {
       setError("Resolve blocking validation errors before exporting.");
       return;
@@ -566,7 +669,9 @@ export function TailorResumePage() {
     try {
       const fitted = await fitResume();
       if (!fitted) return;
-      const bytes = await renderResumePdfBytes(fitted);
+      const exportContent = applyTemplateOrdering(fitted, settings.templateSettings);
+      const { countPdfPages, renderResumePdfBytes } = await import("../../lib/resume/pdf");
+      const bytes = await renderResumePdfBytes(exportContent, settings.templateSettings);
       const actualPages = await countPdfPages(bytes);
       if (actualPages !== 1) {
         setError("The rendered PDF is not one page. Shorten unlocked content before export.");
@@ -581,10 +686,29 @@ export function TailorResumePage() {
       });
       if (!path) return;
       await invoke("write_pdf_file", { path, bytes: Array.from(bytes) });
-      await persistCurrent("exported", path, fitted);
+      await persistCurrent("exported", path, exportContent);
+      setApplicationSaved(false);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "PDF rendering failed.");
+    }
+  };
+
+  const saveApplicationRecord = async () => {
+    if (!job || !savedResume) return;
+    try {
+      await repository.saveApplication({
+        jobId: job.id,
+        company: job.company,
+        role: job.roleTitle,
+        jobUrl: job.sourceUrl,
+        resumeVersionId: savedResume.id,
+        status: savedResume.lastExportPath ? "ready" : "preparing",
+      });
+      setApplicationSaved(true);
+      await queryClient.invalidateQueries({ queryKey: ["applications"] });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     }
   };
 
@@ -624,10 +748,39 @@ export function TailorResumePage() {
             </div>
             <label className="block text-sm font-semibold text-slate-700">Full job description<textarea className="field mt-1 min-h-72" {...form.register("rawDescription")} /></label>
             {form.formState.errors.rawDescription ? <p className="text-sm font-semibold text-red-700">{form.formState.errors.rawDescription.message}</p> : null}
-            <div className="flex gap-2">
-              <button className="button" type="button" onClick={() => form.reset(sampleJob)}>Use sample job</button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="button"
+                type="button"
+                onClick={async () => {
+                  if (dirty && !window.confirm("Replace the job form while a resume draft has unsaved edits?")) return;
+                  try {
+                    const text = await navigator.clipboard.readText();
+                    const parsed = parseClipboardJob(text);
+                    if (!parsed.rawDescription) throw new Error("The clipboard does not contain a job description.");
+                    form.reset(parsed);
+                    setError("");
+                  } catch (caught) {
+                    setError(caught instanceof Error ? caught.message : "Could not read the clipboard.");
+                  }
+                }}
+              >
+                <ClipboardPaste size={15} aria-hidden="true" />
+                Paste job from clipboard
+              </button>
+              <button
+                className="button"
+                type="button"
+                onClick={() => {
+                  if (dirty && !window.confirm("Replace the job form while a resume draft has unsaved edits?")) return;
+                  form.reset(sampleJob);
+                }}
+              >
+                Use sample job
+              </button>
               <button className="button button-primary" type="submit" disabled={analyzeMutation.isPending}><Sparkles size={16} />Analyze job</button>
             </div>
+            <p className="text-xs text-slate-500">Clipboard text stays in this draft until you explicitly save the analyzed job.</p>
           </form>
         ) : null}
 
@@ -644,7 +797,18 @@ export function TailorResumePage() {
             <aside className="panel p-5">
               <p className="text-sm font-semibold text-slate-950">Provider</p>
               <p className="mt-1 text-sm text-slate-600">{settings?.aiProvider ?? "mock"} | {settings?.modelName}</p>
-              <button className="button button-primary mt-5 w-full" type="button" onClick={() => setStep(3)}>Score evidence</button>
+              <p className="mt-4 text-sm font-semibold text-slate-950">Detected role profile</p>
+              <p className="mt-1 text-sm text-slate-600">{ROLE_PROFILES[controls.roleProfileId].name}</p>
+              <div className="mt-3"><ControlsPanel controls={controls} onChange={setControls} /></div>
+              <button
+                className="button button-primary mt-5 w-full"
+                type="button"
+                disabled={jobPersisted}
+                onClick={() => void saveJobAndContinue()}
+              >
+                <Save size={15} aria-hidden="true" />
+                {jobPersisted ? "Job saved" : "Save job and score evidence"}
+              </button>
             </aside>
           </div>
         ) : null}
@@ -656,6 +820,9 @@ export function TailorResumePage() {
               <h3 className="text-lg font-semibold text-slate-950">Tailoring controls</h3>
               <div className="mt-4"><ControlsPanel controls={controls} onChange={setControls} /></div>
               <p className="mt-4 text-sm text-slate-600">{selectedEvidence.length} facts selected from {evidence.length} ranked facts.</p>
+              <button className="button mt-3 w-full" type="button" onClick={() => setOverrides({})}>
+                Use recommended evidence
+              </button>
               <button className="button button-primary mt-5 w-full" type="button" onClick={() => void generateResume()} disabled={selectedEvidence.length === 0 || generating}>
                 <Sparkles size={15} />{generating ? "Generating..." : "Generate tailored resume"}
               </button>
@@ -669,13 +836,20 @@ export function TailorResumePage() {
               <div className="panel flex flex-wrap items-center gap-2 p-4">
                 <div className="mr-auto">
                   <h3 className="text-lg font-semibold text-slate-950">Generation review</h3>
-                  <p className="text-sm text-slate-500">{savedResume ? `Saved as ${savedResume.name}` : "Draft not saved"}</p>
+                  <p className="text-sm text-slate-500">
+                    {savedResume ? `Saved as ${savedResume.name}` : "Draft not saved"}{dirty ? " | unsaved edits" : ""}
+                  </p>
                 </div>
                 <button className="button" type="button" onClick={acceptAll}><Check size={15} />Accept all</button>
                 <button className="button" type="button" onClick={undo} disabled={!history.length}><Undo2 size={15} />Undo</button>
+                <button className="icon-button" type="button" title="Redo" onClick={redo} disabled={!future.length}><Redo2 size={15} aria-hidden="true" /></button>
                 <button className="button" type="button" onClick={() => void fitResume()}>Fit one page</button>
                 <button className="button" type="button" onClick={() => void persistCurrent()}><Save size={15} />Save draft</button>
                 <button className="button button-primary" type="button" onClick={() => void exportResume()}><FileDown size={15} />Export PDF</button>
+                <button className="button" type="button" onClick={() => void saveApplicationRecord()} disabled={applicationSaved}>
+                  <Save size={15} aria-hidden="true" />
+                  {applicationSaved ? "Application saved" : "Save application"}
+                </button>
               </div>
 
               {visibleValidationIssues.length ? (
@@ -770,7 +944,9 @@ export function TailorResumePage() {
               ))}
             </section>
             <aside className="sticky top-0 h-screen overflow-auto border-l border-slate-200 bg-slate-100 p-5">
-              <ResumePreview resume={resume} validationIssues={visibleValidationIssues} pageCount={pageCount} />
+              <Suspense fallback={<LoadingState label="Loading resume preview..." />}>
+                <ResumePreview resume={resume} validationIssues={visibleValidationIssues} pageCount={pageCount} />
+              </Suspense>
               {resume.compactionActions.length ? (
                 <div className="mt-4 rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
                   <p className="font-semibold text-slate-800">Compaction log</p>

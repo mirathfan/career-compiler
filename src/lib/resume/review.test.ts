@@ -39,6 +39,21 @@ describe("resume review behavior", () => {
     expect(updated.find((bullet) => bullet.id === bullets[1].id)?.included).toBe(false);
   });
 
+  it("persists a dirty draft and supports undo and redo", () => {
+    const store = useResumeEditorStore.getState();
+    const bullet = store.resume!.projects[0].bullets[0];
+    const original = bullet.text;
+    store.updateBullet(bullet.id, `${original} Reviewed edit.`);
+    expect(useResumeEditorStore.getState().dirty).toBe(true);
+    expect(localStorage.getItem("careercompiler-resume-draft-v3")).toContain("Reviewed edit");
+    useResumeEditorStore.getState().undo();
+    expect(useResumeEditorStore.getState().resume!.projects[0].bullets[0].text).toBe(original);
+    useResumeEditorStore.getState().redo();
+    expect(useResumeEditorStore.getState().resume!.projects[0].bullets[0].text).toContain("Reviewed edit");
+    useResumeEditorStore.getState().markSaved();
+    expect(useResumeEditorStore.getState().dirty).toBe(false);
+  });
+
   it("produces a semantic rewording diff instead of raw character output", () => {
     const before = deterministicFallback(fixture.request);
     const after = structuredClone(before);

@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
+import { useSearchParams } from "react-router-dom";
 import { Copy, FolderOpen, RefreshCcw, Trash2 } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
@@ -10,8 +11,9 @@ import { regenerateResumeVersion, type RegenerationResult } from "../../lib/tail
 export function ResumeLibraryPage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [error, setError] = useState("");
-  const [openResumeId, setOpenResumeId] = useState("");
+  const [openResumeId, setOpenResumeId] = useState(() => searchParams.get("resumeId") ?? "");
   const [regenerateId, setRegenerateId] = useState("");
   const [refreshAnalysis, setRefreshAnalysis] = useState(false);
   const [regenerationResult, setRegenerationResult] = useState<RegenerationResult | null>(null);
@@ -37,6 +39,9 @@ export function ResumeLibraryPage() {
         generationProvider: resume.generationProvider,
         generationModel: resume.generationModel,
         promptVersion: resume.promptVersion,
+        promptVersionsJson: resume.promptVersionsJson,
+        layoutProfileId: resume.layoutProfileId,
+        templateSettingsJson: resume.templateSettingsJson,
         generationMetadataJson: resume.generationMetadataJson,
         deterministicBaselineJson: resume.deterministicBaselineJson,
       });
@@ -183,7 +188,11 @@ export function ResumeLibraryPage() {
                           <button
                             className="button button-danger"
                             type="button"
-                            onClick={() => deleteResume.mutate(resume.id)}
+                            onClick={() => {
+                              if (window.confirm(`Delete ${resume.name}? This cannot be undone.`)) {
+                                deleteResume.mutate(resume.id);
+                              }
+                            }}
                           >
                             <Trash2 size={14} aria-hidden="true" />
                           </button>

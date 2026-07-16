@@ -89,7 +89,7 @@ pub fn resolve_openai_key<S: SecretStore>(store: &S) -> Result<String, String> {
         .ok()
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| {
-            "OpenAI API key is missing. Add it in Settings or set OPENAI_API_KEY for development."
+            "missing_api_key|OpenAI API key is missing. Add it in Settings or set OPENAI_API_KEY for development."
                 .to_string()
         })
 }
