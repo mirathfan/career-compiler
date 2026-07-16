@@ -24,6 +24,9 @@ Clipboard content is never monitored and is not persisted until **Save job and s
 - Local validation for sources, items, dates, organizations, skills, metrics, duplicates, and unsupported claims.
 - Resume review with accept/reject, locks, manual edits, undo/redo, saved drafts, semantic diff, and approved variants.
 - Applications screen with statuses, dates, notes, associated versions, PDF reveal, and duplication.
+- Candidate Brain with structured claims, sensitive-answer locking, preferences, story bank, and approved application-answer memory.
+- Application answer review with per-field confidence, evidence/story references, edit tracking, and manual-submit enforcement.
+- Manifest V3 Chrome extension package for form scanning, safe filling, highlights, fixtures, and native-messaging bridge preparation.
 - Career Copilot with local conversation history, cited internal sources, hybrid career search, pending write confirmations, and resume-base recommendations.
 - Resume Library search with submitted, ready, draft, favorite, and archived organization plus child-version creation from older bases.
 - Evaluation Lab with six fixtures, deterministic ranking, mock runs, confirmed paid OpenAI runs, objective metrics, comparisons, preferred results, and variant saving.
@@ -38,12 +41,14 @@ src/lib/ai/         providers, structured requests, prompts, pipeline
 src/lib/database/   migrations, repositories, backup and restore
 src/lib/evaluation/ fixtures, objective metrics, comparisons
 src/lib/import/     deterministic untrusted-file extraction
+src/lib/applications field classification and grounded application answers
 src/lib/search/     normalized search documents, hybrid ranking, optional vectors
 src/lib/copilot/    Career Copilot read tools, citations, pending actions
 src/lib/resume/     validation, diff, fitting, safe LaTeX, PDF checks
 src/lib/tailoring/  role profiles, evidence ranking, planning
 src/stores/         persisted resume review draft and history
 src-tauri/          Keychain, OpenAI, XeLaTeX, and bounded file commands
+apps/careercompiler-extension Chrome extension scanner/filler package
 ```
 
 React never receives an OpenAI key. Rust resolves it from macOS Keychain using service `com.mirathfan.careercompiler` and account `openai-api-key`; `OPENAI_API_KEY` is only a development fallback. Keys, full prompts, job descriptions, private notes, resume content, and temporary LaTeX files are excluded from diagnostics and backups as applicable.
@@ -80,6 +85,12 @@ Generate the six deterministic role PDFs with the production LaTeX serializer:
 npx --yes tsx@4.23.1 --tsconfig tsconfig.app.json scripts/generate-evaluation-pdfs.ts
 ```
 
+Build the Chrome extension:
+
+```bash
+npm run extension:build
+```
+
 ## OpenAI Development Tests
 
 Enable Developer mode in Settings. **Test connection** confirms key status, makes one minimal Structured Outputs request, validates it locally, and reports model, duration, and token usage. **Run paid full-pipeline test** requires confirmation and runs one small analysis-to-validation fixture without saving it. Automated tests never call OpenAI.
@@ -95,6 +106,7 @@ Route-level lazy loading, a lazy resume preview, and export-only loading of `pdf
 ## Documentation
 
 - [Data model](docs/data-model.md)
+- [Architecture](docs/architecture.md)
 - [AI pipeline](docs/ai-pipeline.md)
 - [Generation validation](docs/generation-validation.md)
 - [Resume rendering](docs/resume-rendering.md)
@@ -103,6 +115,10 @@ Route-level lazy loading, a lazy resume preview, and export-only loading of `pdf
 - [Runtime diagnostics](docs/runtime-diagnostics.md)
 - [Local evidence import](docs/local-evidence-import.md)
 - [Application tracking](docs/application-tracking.md)
+- [Candidate Brain](docs/candidate-brain.md)
+- [Application autofill](docs/application-autofill.md)
+- [Extension setup](docs/extension-setup.md)
+- [Security and privacy](docs/security-and-privacy.md)
 - [Prompt versions](docs/prompt-versions.md)
 - [Career Copilot](docs/career-copilot.md)
 - [Hybrid retrieval](docs/hybrid-retrieval.md)
@@ -121,3 +137,4 @@ Route-level lazy loading, a lazy resume preview, and export-only loading of `pdf
 - Contact email and phone are intentionally not seeded; the user must enter them before final export.
 - Fitting stops at readable limits and requests a manual edit instead of truncating content or exporting multiple pages.
 - There is no cloud sync, authentication, automated job submission, DOCX export, scraping, or fabricated ATS score.
+- Native-messaging host registration is documented but not yet automated from the Tauri app.

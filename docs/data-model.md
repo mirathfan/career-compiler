@@ -13,6 +13,8 @@ Core tables:
 - `approved_bullet_variants`: reusable reviewed language linked to source facts and a career item.
 - `app_settings`: provider, model, template, export directory, and tailoring defaults.
 - `applications`: local job-application state linked to a job and resume version.
+- `application_fields`: per-field application answers with generated/final values, source, confidence, review state, claim IDs, story IDs, and warnings.
+- `candidate_claims`, `sensitive_answers`, `candidate_preferences`, `career_stories`, and `approved_application_answers`: Candidate Brain records for application reuse.
 - `evaluation_summaries`: safe objective metrics and configuration identifiers, without raw prompts or resumes.
 - `migration_events`: success or failure, version range, automatic backup path, safe error code, and timestamp.
 
@@ -42,3 +44,7 @@ Before applying pending migrations to an existing database, the repository check
 ## Backup Schema 3
 
 JSON backups contain profile, career items and facts, skills, jobs, resumes, approved variants, applications, settings, template settings, and evaluation summaries. Imports reject oversized or secret-like payloads, normalize schema 1 and 2 defaults, show counts and matching-ID conflicts, require confirmation, and support merge or replace in a transaction. Keychain secrets, API keys, temporary LaTeX files, and disposable directories are outside the data model and never exported.
+
+## Migration 5
+
+Migration `candidate_brain_and_application_autofill` is additive. It adds autofill metadata columns to `applications`, creates Candidate Brain tables, and creates `application_fields`. Existing jobs, resumes, applications, and career evidence are preserved. Backup schema 5 includes Candidate Brain collections and application field records.
