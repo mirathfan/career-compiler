@@ -1,6 +1,7 @@
 import { lazy, useEffect } from "react";
 import { HashRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { BarChart3, Bot, BrainCircuit, BriefcaseBusiness, ClipboardList, FlaskConical, Globe, Library, Settings, Sparkles } from "lucide-react";
+import { ExtensionRequestProcessor } from "./lib/extension/ExtensionRequestProcessor";
 
 const DashboardPage = lazy(() => import("./features/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const CandidateBrainPage = lazy(() => import("./features/candidate-brain/CandidateBrainPage").then((module) => ({ default: module.CandidateBrainPage })));
@@ -57,6 +58,7 @@ function AppRoutes() {
   return (
     <>
       <WorkspaceState />
+      <ExtensionRequestProcessor />
       <div className="flex min-h-screen bg-[#f6f7f9] text-slate-900">
         <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
           <div className="border-b border-slate-200 px-5 py-5">

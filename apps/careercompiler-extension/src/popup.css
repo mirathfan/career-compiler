@@ -1,5 +1,5 @@
 body {
-  width: 340px;
+  width: 360px;
   margin: 0;
   background: #f8fafc;
   color: #17202a;
@@ -7,6 +7,7 @@ body {
 }
 
 main { padding: 14px; }
+
 header p {
   margin: 0;
   color: #64748b;
@@ -29,6 +30,50 @@ h1 {
   color: #475569;
 }
 
+.status[data-tone="ok"] {
+  border-color: #86efac;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.status[data-tone="warn"] {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.status[data-tone="error"] {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.pairing {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 10px;
+}
+
+.pairing[hidden] { display: none; }
+
+label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 3px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+}
+
 dl {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -36,7 +81,8 @@ dl {
   margin: 12px 0;
 }
 
-dl div {
+dl div,
+.context {
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #fff;
@@ -55,6 +101,27 @@ dd {
   font-weight: 700;
 }
 
+.context {
+  margin-bottom: 12px;
+}
+
+.context p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context p:first-child {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.context p:last-child {
+  margin-top: 2px;
+  font-weight: 700;
+}
+
 .actions {
   display: grid;
   gap: 8px;
@@ -70,11 +137,21 @@ button {
   font-weight: 700;
 }
 
-button:hover { background: #f1f5f9; }
+button:hover:not(:disabled) { background: #f1f5f9; }
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 #fill {
   border-color: #174ea6;
   background: #174ea6;
   color: #fff;
+}
+
+#save-edits {
+  border-color: #2563eb;
+  color: #1d4ed8;
 }
 
 footer {

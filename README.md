@@ -26,7 +26,7 @@ Clipboard content is never monitored and is not persisted until **Save job and s
 - Applications screen with statuses, dates, notes, associated versions, PDF reveal, and duplication.
 - Candidate Brain with structured claims, sensitive-answer locking, preferences, story bank, and approved application-answer memory.
 - Application answer review with per-field confidence, evidence/story references, edit tracking, and manual-submit enforcement.
-- Manifest V3 Chrome extension package for form scanning, safe filling, highlights, fixtures, and native-messaging bridge preparation.
+- Manifest V3 Chrome extension package with paired native messaging, field scanning, safe filling, resume upload for authorized small PDFs, edit sync, highlights, and fixtures.
 - Career Copilot with local conversation history, cited internal sources, hybrid career search, pending write confirmations, and resume-base recommendations.
 - Resume Library search with submitted, ready, draft, favorite, and archived organization plus child-version creation from older bases.
 - Evaluation Lab with six fixtures, deterministic ranking, mock runs, confirmed paid OpenAI runs, objective metrics, comparisons, preferred results, and variant saving.
@@ -47,7 +47,7 @@ src/lib/copilot/    Career Copilot read tools, citations, pending actions
 src/lib/resume/     validation, diff, fitting, safe LaTeX, PDF checks
 src/lib/tailoring/  role profiles, evidence ranking, planning
 src/stores/         persisted resume review draft and history
-src-tauri/          Keychain, OpenAI, XeLaTeX, and bounded file commands
+src-tauri/          Keychain, OpenAI, XeLaTeX, native host, and bounded file commands
 apps/careercompiler-extension Chrome extension scanner/filler package
 ```
 
@@ -73,6 +73,7 @@ PATH="$HOME/.cargo/bin:$PATH" npm run tauri:dev
 npm run lint
 npm run typecheck
 npm run test:run
+npm run extension:build
 PATH="$HOME/.cargo/bin:$PATH" cargo fmt --manifest-path src-tauri/Cargo.toml --check
 PATH="$HOME/.cargo/bin:$PATH" cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
@@ -137,4 +138,5 @@ Route-level lazy loading, a lazy resume preview, and export-only loading of `pdf
 - Contact email and phone are intentionally not seeded; the user must enter them before final export.
 - Fitting stops at readable limits and requests a manual edit instead of truncating content or exporting multiple pages.
 - There is no cloud sync, authentication, automated job submission, DOCX export, scraping, or fabricated ATS score.
-- Native-messaging host registration is documented but not yet automated from the Tauri app.
+- Browser autofill supports Generic, Greenhouse-style, Lever-style, and Ashby-style forms; Workday remains unsupported.
+- Large resume PDFs may require manual upload because Chrome native messaging responses are bounded.
