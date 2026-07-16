@@ -57,6 +57,7 @@ describe("additive database migrations", () => {
 
     applyMigration(database, 2);
     applyMigration(database, 3);
+    applyMigration(database, 4);
 
     expect(database.exec("SELECT statement, source_note FROM career_facts WHERE id='fact-1'")[0].values[0])
       .toEqual(["Preserve this fact.", "User note"]);
@@ -66,10 +67,24 @@ describe("additive database migrations", () => {
       .toBe("/private/export");
     expect(columnNames(database, "career_facts")).toContain("source_reference");
     expect(columnNames(database, "resume_versions")).toContain("prompt_versions_json");
-    expect(tableNames(database)).toEqual(
-      expect.arrayContaining(["applications", "evaluation_summaries", "migration_events"]),
+    expect(columnNames(database, "applications")).toEqual(
+      expect.arrayContaining(["submitted_resume_version_id", "follow_up_date", "next_action"]),
     );
-    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3]]);
+    expect(tableNames(database)).toEqual(
+      expect.arrayContaining([
+        "applications",
+        "evaluation_summaries",
+        "migration_events",
+        "career_copilot_threads",
+        "career_copilot_messages",
+        "search_documents",
+        "search_embeddings",
+        "resume_recommendations",
+        "resume_favorites",
+        "resume_archives",
+      ]),
+    );
+    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3], [4]]);
     database.close();
   });
 
@@ -91,15 +106,81 @@ describe("additive database migrations", () => {
     );
 
     applyMigration(database, 3);
+    applyMigration(database, 4);
 
     const row = database.exec(
       "SELECT generation_provider,generation_model,prompt_version,last_export_path,layout_profile_id FROM resume_versions",
     )[0].values[0];
     expect(row).toEqual(["openai", "saved-model", "prompt-v2", "/tmp/resume.pdf", "general-software-engineer"]);
     expect(columnNames(database, "app_settings")).toEqual(
-      expect.arrayContaining(["template_settings_json", "developer_mode", "ui_state_json"]),
+      expect.arrayContaining([
+        "template_settings_json",
+        "developer_mode",
+        "ui_state_json",
+        "semantic_search_mode",
+        "allow_remote_embeddings",
+      ]),
     );
     expect(tableNames(database)).toContain("applications");
+    database.close();
+  });
+
+  it("adds Career Copilot search tables without changing application rows", () => {
+    const database = createDatabase();
+    applyMigration(database, 1);
+    applyMigration(database, 2);
+    applyMigration(database, 3);
+    database.run(
+      `INSERT INTO applications (
+        id, job_id, company, role, job_url, resume_version_id, status, applied_date,
+        referral_contact, notes, created_at, updated_at
+      ) VALUES (
+        'app-1', 'job-1', 'NVIDIA', 'Systems Engineer', '', 'resume-1', 'interview', '2026-07-01',
+        'Referral', 'Follow up next week.', 'created', 'updated'
+      )`,
+    );
+
+    applyMigration(database, 4);
+
+    const row = database.exec(
+      "SELECT company, status, notes, submitted_resume_version_id, follow_up_date, next_action FROM applications WHERE id='app-1'",
+    )[0].values[0];
+    expect(row).toEqual(["NVIDIA", "interview", "Follow up next week.", "", "", ""]);
+    expect(tableNames(database)).toEqual(
+      expect.arrayContaining(["saved_application_answers", "career_imports", "search_index_events"]),
+    );
+    database.close();
+  });
+
+  it("adds Candidate Brain and application autofill tables additively", () => {
+    const database = createDatabase();
+    applyMigration(database, 1);
+    applyMigration(database, 2);
+    applyMigration(database, 3);
+    applyMigration(database, 4);
+    applyMigration(database, 5);
+
+    expect(tableNames(database)).toEqual(
+      expect.arrayContaining([
+        "candidate_claims",
+        "sensitive_answers",
+        "candidate_preferences",
+        "career_stories",
+        "approved_application_answers",
+        "application_fields",
+      ]),
+    );
+    expect(columnNames(database, "applications")).toEqual(
+      expect.arrayContaining([
+        "automation_mode",
+        "application_url",
+        "ats_platform",
+        "match_score",
+        "submitted_at",
+        "job_snapshot_json",
+        "status_history_json",
+      ]),
+    );
     database.close();
   });
 });

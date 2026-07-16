@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CareerCompiler</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p>CareerCompiler</p>
+        <h1>Application Autofill</h1>
+      </header>
+      <section id="status" class="status">Scan the page to detect fields.</section>
+      <dl>
+        <div><dt>ATS</dt><dd id="ats">-</dd></div>
+        <div><dt>Fields</dt><dd id="fields">0</dd></div>
+        <div><dt>Safe</dt><dd id="safe">0</dd></div>
+        <div><dt>Review</dt><dd id="review">0</dd></div>
+      </dl>
+      <div class="actions">
+        <button id="scan" type="button">Re-scan</button>
+        <button id="fill" type="button">Fill with CareerCompiler</button>
+        <button id="clear" type="button">Clear highlights</button>
+      </div>
+      <footer>Review complete - submit manually in the browser.</footer>
+    </main>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

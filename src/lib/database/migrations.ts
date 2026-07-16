@@ -205,4 +205,270 @@ export const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_evaluations_fixture ON evaluation_summaries(fixture_id, created_at);
     `,
   },
+  {
+    id: 4,
+    name: "career_copilot_hybrid_retrieval",
+    sql: `
+      ALTER TABLE app_settings ADD COLUMN semantic_search_mode TEXT NOT NULL DEFAULT 'disabled' CHECK(semantic_search_mode IN ('disabled','openai','local'));
+      ALTER TABLE app_settings ADD COLUMN allow_remote_embeddings INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE app_settings ADD COLUMN allow_private_notes_in_embeddings INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE app_settings ADD COLUMN allow_contact_fields_in_copilot_context INTEGER NOT NULL DEFAULT 0;
+
+      ALTER TABLE applications ADD COLUMN submitted_resume_version_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN submitted_pdf_path TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN submitted_pdf_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN follow_up_date TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN recruiter TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN hiring_manager TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN referral TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN source TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN salary_range TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN location_type TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN sponsorship_notes TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN next_action TEXT NOT NULL DEFAULT '';
+
+      CREATE TABLE IF NOT EXISTS career_copilot_threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        active_context_type TEXT NOT NULL,
+        active_context_id TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        archived_at TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS career_copilot_messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES career_copilot_threads(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('user','assistant','system','tool')),
+        content TEXT NOT NULL,
+        structured_content_json TEXT NOT NULL DEFAULT '{}',
+        tool_calls_json TEXT NOT NULL DEFAULT '[]',
+        internal_citations_json TEXT NOT NULL DEFAULT '[]',
+        pending_actions_json TEXT NOT NULL DEFAULT '[]',
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        token_usage_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS search_documents (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        parent_entity_type TEXT NOT NULL DEFAULT '',
+        parent_entity_id TEXT NOT NULL DEFAULT '',
+        title TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        content_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(entity_type, entity_id, parent_entity_type, parent_entity_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS search_embeddings (
+        id TEXT PRIMARY KEY,
+        search_document_id TEXT NOT NULL REFERENCES search_documents(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL,
+        vector_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(search_document_id, provider, model)
+      );
+
+      CREATE TABLE IF NOT EXISTS resume_recommendations (
+        id TEXT PRIMARY KEY,
+        target_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        candidate_resume_version_id TEXT NOT NULL REFERENCES resume_versions(id) ON DELETE CASCADE,
+        overall_score REAL NOT NULL,
+        role_score REAL NOT NULL,
+        skill_score REAL NOT NULL,
+        responsibility_score REAL NOT NULL,
+        evidence_score REAL NOT NULL,
+        career_item_score REAL NOT NULL,
+        recency_score REAL NOT NULL,
+        validation_score REAL NOT NULL,
+        explanation_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(target_job_id, candidate_resume_version_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS resume_favorites (
+        resume_version_id TEXT PRIMARY KEY REFERENCES resume_versions(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS resume_archives (
+        resume_version_id TEXT PRIMARY KEY REFERENCES resume_versions(id) ON DELETE CASCADE,
+        archived_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS saved_application_answers (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL DEFAULT '',
+        application_id TEXT NOT NULL DEFAULT '',
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        source_fact_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_citation_ids_json TEXT NOT NULL DEFAULT '[]',
+        approval_status TEXT NOT NULL CHECK(approval_status IN ('draft','approved','rejected')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS career_imports (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        source_title TEXT NOT NULL,
+        source_reference TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        approved_count INTEGER NOT NULL,
+        rejected_count INTEGER NOT NULL,
+        merged_count INTEGER NOT NULL,
+        records_created_json TEXT NOT NULL,
+        records_updated_json TEXT NOT NULL,
+        safe_source_hash TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        undo_snapshot_json TEXT NOT NULL,
+        undone_at TEXT NOT NULL DEFAULT ''
+      );
+
+      CREATE TABLE IF NOT EXISTS search_index_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        safe_message TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_copilot_threads_updated ON career_copilot_threads(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_copilot_messages_thread ON career_copilot_messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_search_documents_entity ON search_documents(entity_type, entity_id);
+      CREATE INDEX IF NOT EXISTS idx_search_documents_parent ON search_documents(parent_entity_type, parent_entity_id);
+      CREATE INDEX IF NOT EXISTS idx_search_documents_hash ON search_documents(content_hash);
+      CREATE INDEX IF NOT EXISTS idx_search_embeddings_document ON search_embeddings(search_document_id);
+      CREATE INDEX IF NOT EXISTS idx_resume_recommendations_job ON resume_recommendations(target_job_id, overall_score);
+      CREATE INDEX IF NOT EXISTS idx_applications_follow_up ON applications(follow_up_date);
+      CREATE INDEX IF NOT EXISTS idx_applications_submitted_resume ON applications(submitted_resume_version_id);
+      CREATE INDEX IF NOT EXISTS idx_saved_answers_job ON saved_application_answers(job_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_career_imports_created ON career_imports(created_at);
+    `,
+  },
+  {
+    id: 5,
+    name: "candidate_brain_and_application_autofill",
+    sql: `
+      ALTER TABLE applications ADD COLUMN automation_mode TEXT NOT NULL DEFAULT 'manual' CHECK(automation_mode IN ('manual','autofill_manual_submit'));
+      ALTER TABLE applications ADD COLUMN application_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN ats_platform TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN match_score REAL;
+      ALTER TABLE applications ADD COLUMN submitted_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE applications ADD COLUMN job_snapshot_json TEXT;
+      ALTER TABLE applications ADD COLUMN status_history_json TEXT NOT NULL DEFAULT '[]';
+
+      CREATE TABLE IF NOT EXISTS candidate_claims (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK(verification_status IN ('verified','user_confirmed','inferred','unverified','conflicting')),
+        evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+        locked INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS sensitive_answers (
+        id TEXT PRIMARY KEY,
+        answer_key TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        verification_status TEXT NOT NULL CHECK(verification_status IN ('verified','user_confirmed','inferred','unverified','conflicting')),
+        locked INTEGER NOT NULL DEFAULT 0,
+        requires_review INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS candidate_preferences (
+        id TEXT PRIMARY KEY,
+        preferences_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS career_stories (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        competencies_json TEXT NOT NULL DEFAULT '[]',
+        situation TEXT NOT NULL DEFAULT '',
+        problem TEXT NOT NULL DEFAULT '',
+        actions_json TEXT NOT NULL DEFAULT '[]',
+        result TEXT NOT NULL DEFAULT '',
+        metrics_json TEXT NOT NULL DEFAULT '[]',
+        technologies_json TEXT NOT NULL DEFAULT '[]',
+        evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+        verification_status TEXT NOT NULL CHECK(verification_status IN ('verified','user_confirmed','inferred','unverified','conflicting')),
+        approved INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS approved_application_answers (
+        id TEXT PRIMARY KEY,
+        normalized_question_type TEXT NOT NULL,
+        original_question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        applicable_role_families_json TEXT NOT NULL DEFAULT '[]',
+        applicable_industries_json TEXT NOT NULL DEFAULT '[]',
+        applicable_skills_json TEXT NOT NULL DEFAULT '[]',
+        source_story_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_claim_ids_json TEXT NOT NULL DEFAULT '[]',
+        tone TEXT NOT NULL DEFAULT '',
+        approved_by_user INTEGER NOT NULL DEFAULT 1,
+        do_not_reuse INTEGER NOT NULL DEFAULT 0,
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS application_fields (
+        id TEXT PRIMARY KEY,
+        application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+        original_question TEXT NOT NULL,
+        normalized_question_type TEXT NOT NULL,
+        detected_field_type TEXT NOT NULL,
+        generated_answer_json TEXT NOT NULL DEFAULT '""',
+        final_answer_json TEXT NOT NULL DEFAULT '""',
+        answer_source TEXT NOT NULL CHECK(answer_source IN ('fixed_profile','locked_sensitive','approved_answer','tailored_ai','user_required')),
+        confidence REAL NOT NULL,
+        requires_review INTEGER NOT NULL DEFAULT 1,
+        user_edited INTEGER NOT NULL DEFAULT 0,
+        approved INTEGER NOT NULL DEFAULT 0,
+        do_not_reuse INTEGER NOT NULL DEFAULT 0,
+        claim_ids_json TEXT NOT NULL DEFAULT '[]',
+        story_ids_json TEXT NOT NULL DEFAULT '[]',
+        warnings_json TEXT NOT NULL DEFAULT '[]',
+        reasoning_summary TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_candidate_claims_category ON candidate_claims(category, verification_status);
+      CREATE INDEX IF NOT EXISTS idx_sensitive_answers_key ON sensitive_answers(answer_key);
+      CREATE INDEX IF NOT EXISTS idx_career_stories_approved ON career_stories(approved, archived, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_approved_answers_question ON approved_application_answers(normalized_question_type, approved_by_user);
+      CREATE INDEX IF NOT EXISTS idx_application_fields_application ON application_fields(application_id, requires_review);
+      CREATE INDEX IF NOT EXISTS idx_applications_autofill ON applications(automation_mode, ats_platform);
+    `,
+  },
 ];

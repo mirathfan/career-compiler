@@ -11,6 +11,8 @@ Keep business logic outside React components:
 - `src/lib/tailoring` for evidence scoring, planning, and deterministic resume generation.
 - `src/lib/evaluation` for role fixtures, objective metrics, and generation comparisons.
 - `src/lib/import` for bounded deterministic extraction from explicitly selected local evidence files.
+- `src/lib/search` for normalized search documents, FTS/fallback ranking, vector-provider abstractions, and resume recommendations.
+- `src/lib/copilot` for Career Copilot read tooling, citation construction, context limits, and pending write-action proposals.
 - `src/lib/resume` for validation, diff, quality, filename handling, compaction, LaTeX serialization, and PDF page count.
 - `src/features/*` for routed UI screens.
 
@@ -54,6 +56,14 @@ Template options must pass `ResumeTemplateSettingsSchema`. Font names come only 
 All schema changes are additive. Existing databases require a native copy before pending migrations, and migration success or failure must be recorded without storing private SQL or row content. JSON restore must be previewed, validated, confirmed, and transactional. Never put API keys, temporary build files, or raw OpenAI responses in a backup.
 
 Jobs pasted from the clipboard remain transient until the user explicitly saves them. Live OpenAI connectivity, full-pipeline, and evaluation actions must never run automatically and must clearly identify paid requests.
+
+## Career Copilot and Search
+
+Use exact repository/SQLite reads for exact factual questions such as submitted resume, application status, creation dates, lineage, and source facts. Use search documents, FTS5 when available, deterministic fallback ranking, and optional semantic providers only for retrieval problems that need search.
+
+Career Copilot answers must cite internal records that were actually included in context. When evidence is missing, say so rather than filling gaps. Write tools must create pending actions with before/after values and require explicit confirmation before mutating SQLite.
+
+Semantic search defaults to disabled. Do not send career data to a remote embedding provider unless the user has opted in through Settings. Never embed API keys, emails, phone numbers, or private notes unless the relevant explicit setting allows that class of data.
 
 ## Completion Requirements
 

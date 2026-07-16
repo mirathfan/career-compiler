@@ -1,6 +1,8 @@
 import type {
   AIProviderMode,
   AIProviderResult,
+  CareerImportProposal,
+  CareerImportSourceType,
   JobAnalysis,
   ResumeGenerationRequest,
   ResumePlan,
@@ -35,6 +37,14 @@ export interface ShortenBulletInput extends PlanResumeInput {
   bullet: ResumeBullet;
 }
 
+export interface ExtractCareerInformationInput {
+  text: string;
+  sourceType: CareerImportSourceType;
+  sourceTitle: string;
+  sourceReference: string;
+  modelName: string;
+}
+
 export interface AIProvider {
   readonly mode: AIProviderMode;
   analyzeJob(input: AnalyzeJobInput): Promise<AIProviderResult<JobAnalysis>>;
@@ -42,6 +52,7 @@ export interface AIProvider {
   generateResume(input: GenerateResumeInput): Promise<AIProviderResult<TailoredResume>>;
   repairResume(input: RepairResumeInput): Promise<AIProviderResult<TailoredResume>>;
   shortenBullet(input: ShortenBulletInput): Promise<AIProviderResult<ResumeBullet>>;
+  extractCareerInformation(input: ExtractCareerInformationInput): Promise<AIProviderResult<CareerImportProposal>>;
 }
 
 export class AIProviderError extends Error {

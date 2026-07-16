@@ -113,7 +113,7 @@ describe("daily application readiness", () => {
     delete facts[0].sourceType;
     delete facts[0].sourceReference;
     const parsed = parseBackupText(JSON.stringify(legacy));
-    expect(parsed.schemaVersion).toBe(3);
+    expect(parsed.schemaVersion).toBe(5);
     expect(parsed.careerFacts[0].sourceType).toBe("user_statement");
     expect(createBackupPreview(parsed, current).conflicts.length).toBeGreaterThan(0);
     expect(() => parseBackupText('{"apiKey":"sk-private123456"}')).toThrow(/secret/i);

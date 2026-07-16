@@ -1,4 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  CareerImportProposal as CareerImportProposalSchema,
+  careerImportProposalJsonSchema,
+} from "../../schemas/careerImport";
 import { JobAnalysisSchema, jobAnalysisJsonSchema } from "../../schemas/jobAnalysis";
 import {
   ResumePlanSchema,
@@ -16,6 +20,7 @@ import type {
 import {
   JOB_ANALYSIS_PROMPT,
   BULLET_SHORTEN_PROMPT,
+  CAREER_INTAKE_PROMPT,
   PROMPT_VERSIONS,
   RESUME_GENERATION_PROMPT,
   RESUME_PLAN_PROMPT,
@@ -25,6 +30,7 @@ import {
   AIProviderError,
   type AIProvider,
   type AnalyzeJobInput,
+  type ExtractCareerInformationInput,
   type GenerateResumeInput,
   type PlanResumeInput,
   type RepairResumeInput,
@@ -188,6 +194,24 @@ export class OpenAIProvider implements AIProvider {
       schemaName: "shortened_resume_bullet",
       schema: resumeBulletJsonSchema,
       parse: (value) => ResumeBulletSchema.parse(value),
+    });
+  }
+
+  extractCareerInformation(input: ExtractCareerInformationInput) {
+    return this.callStructured({
+      model: input.modelName,
+      requestType: "career_intake",
+      instructions: CAREER_INTAKE_PROMPT,
+      input: {
+        promptVersion: PROMPT_VERSIONS.careerIntake,
+        sourceType: input.sourceType,
+        sourceTitle: input.sourceTitle,
+        sourceReference: input.sourceReference,
+        pastedText: input.text,
+      },
+      schemaName: "career_import_proposal",
+      schema: careerImportProposalJsonSchema,
+      parse: (value) => CareerImportProposalSchema.parse(value),
     });
   }
 }

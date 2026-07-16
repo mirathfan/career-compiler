@@ -13,6 +13,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest",
     "test:run": "vitest run",
+    "extension:build": "node apps/careercompiler-extension/scripts/build.mjs",
+    "extension:dev": "node --watch apps/careercompiler-extension/scripts/build.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

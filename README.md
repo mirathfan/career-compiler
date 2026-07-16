@@ -24,6 +24,8 @@ Clipboard content is never monitored and is not persisted until **Save job and s
 - Local validation for sources, items, dates, organizations, skills, metrics, duplicates, and unsupported claims.
 - Resume review with accept/reject, locks, manual edits, undo/redo, saved drafts, semantic diff, and approved variants.
 - Applications screen with statuses, dates, notes, associated versions, PDF reveal, and duplication.
+- Career Copilot with local conversation history, cited internal sources, hybrid career search, pending write confirmations, and resume-base recommendations.
+- Resume Library search with submitted, ready, draft, favorite, and archived organization plus child-version creation from older bases.
 - Evaluation Lab with six fixtures, deterministic ranking, mock runs, confirmed paid OpenAI runs, objective metrics, comparisons, preferred results, and variant saving.
 - Career-fact source traceability, review queue, and controlled local README/JSON/TOML/text evidence import.
 - First-run checks, XeLaTeX diagnostics, redacted diagnostics report, and versioned JSON backup preview/restore.
@@ -36,6 +38,8 @@ src/lib/ai/         providers, structured requests, prompts, pipeline
 src/lib/database/   migrations, repositories, backup and restore
 src/lib/evaluation/ fixtures, objective metrics, comparisons
 src/lib/import/     deterministic untrusted-file extraction
+src/lib/search/     normalized search documents, hybrid ranking, optional vectors
+src/lib/copilot/    Career Copilot read tools, citations, pending actions
 src/lib/resume/     validation, diff, fitting, safe LaTeX, PDF checks
 src/lib/tailoring/  role profiles, evidence ranking, planning
 src/stores/         persisted resume review draft and history
@@ -100,10 +104,19 @@ Route-level lazy loading, a lazy resume preview, and export-only loading of `pdf
 - [Local evidence import](docs/local-evidence-import.md)
 - [Application tracking](docs/application-tracking.md)
 - [Prompt versions](docs/prompt-versions.md)
+- [Career Copilot](docs/career-copilot.md)
+- [Hybrid retrieval](docs/hybrid-retrieval.md)
+- [Resume recommendations](docs/resume-recommendations.md)
+- [Internal citations](docs/internal-citations.md)
+- [Agent tools](docs/agent-tools.md)
+- [Embedding privacy](docs/embedding-privacy.md)
+- [Resume Library search](docs/resume-library-search.md)
 
 ## Known Limitations
 
 - Live OpenAI behavior requires a user-supplied key and explicit manual testing.
+- Career Copilot currently uses deterministic local tools; the versioned OpenAI agent prompt exists but streaming model-backed chat is deferred.
+- Semantic search is optional and disabled by default; FTS/fallback search remains the required path.
 - XeLaTeX remains an external prerequisite. A portable TeX distribution would materially increase package size and maintenance risk, so it is deferred.
 - Contact email and phone are intentionally not seeded; the user must enter them before final export.
 - Fitting stops at readable limits and requests a manual edit instead of truncating content or exporting multiple pages.

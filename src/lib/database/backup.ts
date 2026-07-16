@@ -8,14 +8,27 @@ const BackupEnvelopeSchema = z.object({
   careerItems: z.array(z.unknown()),
   careerFacts: z.array(z.unknown()),
   skills: z.array(z.unknown()),
+  candidateClaims: z.array(z.unknown()).optional().default([]),
+  sensitiveAnswers: z.array(z.unknown()).optional().default([]),
+  candidatePreferences: z.unknown().nullable().optional().default(null),
+  careerStories: z.array(z.unknown()).optional().default([]),
+  approvedApplicationAnswers: z.array(z.unknown()).optional().default([]),
   jobs: z.array(z.unknown()),
   resumes: z.array(z.unknown()),
   approvedVariants: z.array(z.unknown()).optional().default([]),
   applications: z.array(z.unknown()).optional().default([]),
+  applicationFields: z.array(z.unknown()).optional().default([]),
+  savedApplicationAnswers: z.array(z.unknown()).optional().default([]),
   evaluationSummaries: z.array(z.unknown()).optional().default([]),
+  careerImports: z.array(z.unknown()).optional().default([]),
+  careerCopilotThreads: z.array(z.unknown()).optional().default([]),
+  careerCopilotMessages: z.array(z.unknown()).optional().default([]),
+  resumeFavorites: z.array(z.unknown()).optional().default([]),
+  resumeArchives: z.array(z.unknown()).optional().default([]),
+  resumeRecommendations: z.array(z.unknown()).optional().default([]),
   settings: z.unknown(),
   exportedAt: z.string(),
-  schemaVersion: z.number().int().min(1).max(3),
+  schemaVersion: z.number().int().min(1).max(5),
 });
 
 function containsSecret(text: string) {
@@ -43,9 +56,22 @@ export function parseBackupText(text: string): BackupPayload {
       layoutProfileId: resume.layoutProfileId ?? "general-software-engineer",
       templateSettingsJson: resume.templateSettingsJson ?? defaultSettings.templateSettings,
     })),
+    candidateClaims: raw.candidateClaims ?? [],
+    sensitiveAnswers: raw.sensitiveAnswers ?? [],
+    candidatePreferences: raw.candidatePreferences ?? null,
+    careerStories: raw.careerStories ?? [],
+    approvedApplicationAnswers: raw.approvedApplicationAnswers ?? [],
     approvedVariants: raw.approvedVariants ?? [],
     applications: raw.applications ?? [],
+    applicationFields: raw.applicationFields ?? [],
+    savedApplicationAnswers: raw.savedApplicationAnswers ?? [],
     evaluationSummaries: raw.evaluationSummaries ?? [],
+    careerImports: raw.careerImports ?? [],
+    careerCopilotThreads: raw.careerCopilotThreads ?? [],
+    careerCopilotMessages: raw.careerCopilotMessages ?? [],
+    resumeFavorites: raw.resumeFavorites ?? [],
+    resumeArchives: raw.resumeArchives ?? [],
+    resumeRecommendations: raw.resumeRecommendations ?? [],
     settings: {
       ...defaultSettings,
       ...raw.settings,
@@ -58,8 +84,17 @@ export function parseBackupText(text: string): BackupPayload {
         ...raw.settings.templateSettings,
       },
       uiState: { ...defaultSettings.uiState, ...raw.settings.uiState },
+      semanticSearchMode: raw.settings.semanticSearchMode ?? defaultSettings.semanticSearchMode,
+      allowRemoteEmbeddings:
+        raw.settings.allowRemoteEmbeddings ?? defaultSettings.allowRemoteEmbeddings,
+      allowPrivateNotesInEmbeddings:
+        raw.settings.allowPrivateNotesInEmbeddings ??
+        defaultSettings.allowPrivateNotesInEmbeddings,
+      allowContactFieldsInCopilotContext:
+        raw.settings.allowContactFieldsInCopilotContext ??
+        defaultSettings.allowContactFieldsInCopilotContext,
     },
-    schemaVersion: 3,
+    schemaVersion: 5,
   };
 }
 
@@ -68,19 +103,35 @@ export function createBackupPreview(payload: BackupPayload, current?: BackupPayl
     careerItems: payload.careerItems,
     careerFacts: payload.careerFacts,
     skills: payload.skills,
+    candidateClaims: payload.candidateClaims,
+    sensitiveAnswers: payload.sensitiveAnswers,
+    careerStories: payload.careerStories,
+    approvedApplicationAnswers: payload.approvedApplicationAnswers,
     jobs: payload.jobs,
     resumes: payload.resumes,
     approvedVariants: payload.approvedVariants,
     applications: payload.applications,
+    applicationFields: payload.applicationFields,
+    savedApplicationAnswers: payload.savedApplicationAnswers,
     evaluationSummaries: payload.evaluationSummaries,
+    careerImports: payload.careerImports,
+    careerCopilotThreads: payload.careerCopilotThreads,
+    careerCopilotMessages: payload.careerCopilotMessages,
+    resumeFavorites: payload.resumeFavorites,
+    resumeArchives: payload.resumeArchives,
+    resumeRecommendations: payload.resumeRecommendations,
+  };
+  const keyFor = (item: unknown) => {
+    const value = item as { id?: string; resumeVersionId?: string };
+    return value.id ?? value.resumeVersionId ?? "";
   };
   const conflicts = current
     ? Object.entries(collections).flatMap(([name, values]) => {
         const currentIds = new Set(
-          (current[name as keyof typeof collections] as Array<{ id: string }>).map((item) => item.id),
+          (current[name as keyof typeof collections] as unknown[]).map(keyFor).filter(Boolean),
         );
-        return (values as Array<{ id: string }>).filter((item) => currentIds.has(item.id)).map(
-          (item) => `${name}:${item.id}`,
+        return (values as unknown[]).filter((item) => currentIds.has(keyFor(item))).map(
+          (item) => `${name}:${keyFor(item)}`,
         );
       })
     : [];

@@ -35,6 +35,7 @@ import type {
   EvidenceStatus,
   Skill,
 } from "../../types/domain";
+import { SmartCareerIntake } from "./SmartCareerIntake";
 
 const itemTypes: CareerItemType[] = ["project", "employment", "education"];
 const evidenceStatuses: EvidenceStatus[] = ["user_provided", "verified", "needs_review", "prohibited"];
@@ -437,6 +438,7 @@ export function CareerMemoryPage() {
   const [importCandidates, setImportCandidates] = useState<EvidenceImportCandidate[]>([]);
   const [importFileName, setImportFileName] = useState("");
   const [importError, setImportError] = useState("");
+  const [showSmartIntake, setShowSmartIntake] = useState(false);
   const itemsQuery = useQuery({ queryKey: ["career-items"], queryFn: () => repository.listCareerItems() });
   const factsQuery = useQuery({
     queryKey: ["career-facts", search, status],
@@ -601,9 +603,15 @@ export function CareerMemoryPage() {
         eyebrow="Evidence database"
         title="Career Memory"
         actions={
-          <button className="button" type="button" onClick={() => seed.mutate()}>
-            Run safe seed
-          </button>
+          <div className="flex gap-2">
+            <button className="button" type="button" onClick={() => setShowSmartIntake((value) => !value)}>
+              <FileInput size={15} aria-hidden="true" />
+              Import career information
+            </button>
+            <button className="button" type="button" onClick={() => seed.mutate()}>
+              Run safe seed
+            </button>
+          </div>
         }
       />
       <div className="grid grid-cols-[390px_1fr] gap-6 p-8">
@@ -695,6 +703,16 @@ export function CareerMemoryPage() {
         </aside>
 
         <section className="space-y-4">
+          {showSmartIntake ? (
+            <SmartCareerIntake
+              items={items}
+              facts={facts}
+              skills={skills}
+              selectedItemId={selected?.id ?? null}
+              onDone={invalidate}
+            />
+          ) : null}
+
           <div className="panel p-4">
             <div className="grid grid-cols-[1fr_220px] gap-3">
               <input

@@ -1,0 +1,20 @@
+.cc-autofill-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font: 600 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
+  vertical-align: middle;
+}
+
+.cc-autofill-green { outline: 2px solid #16a34a !important; }
+.cc-autofill-blue { outline: 2px solid #2563eb !important; }
+.cc-autofill-yellow { outline: 2px solid #d97706 !important; }
+.cc-autofill-red { outline: 2px solid #dc2626 !important; }
+
+.cc-autofill-badge-green { border: 1px solid #86efac; background: #dcfce7; color: #166534; }
+.cc-autofill-badge-blue { border: 1px solid #93c5fd; background: #dbeafe; color: #1d4ed8; }
+.cc-autofill-badge-yellow { border: 1px solid #fcd34d; background: #fef3c7; color: #92400e; }
+.cc-autofill-badge-red { border: 1px solid #fca5a5; background: #fee2e2; color: #991b1b; }

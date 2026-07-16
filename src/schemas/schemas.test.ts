@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CareerImportProposal } from "./careerImport";
 import { JobAnalysisSchema, jobAnalysisJsonSchema } from "./jobAnalysis";
 import { ResumePlanSchema, TailoredResumeSchema } from "./resume";
 
@@ -90,5 +91,65 @@ describe("zod schemas", () => {
       contentBudget: { maxBullets: 10, maxProjects: 3, includeSummary: true, maxBulletsPerItem: 2 },
     });
     expect(plan.contentBudget.maxBullets).toBe(10);
+  });
+
+  it("parses strict career import proposals and rejects arbitrary fields", () => {
+    const baseProposal = {
+      importId: "career-import-test",
+      sourceType: "paste_anything",
+      sourceTitle: "Test paste",
+      sourceReference: "manual paste",
+      profileChanges: [],
+      careerItemChanges: [],
+      careerFactChanges: [],
+      skillChanges: [],
+      relationshipChanges: [],
+      warnings: [],
+      unresolvedQuestions: [],
+      extractionMetadata: {
+        provider: "mock",
+        model: "mock",
+        promptVersion: "careercompiler-career-intake-v1.0.0",
+        classifiedAs: "paste_anything",
+        createdAt: "2026-07-16T00:00:00.000Z",
+      },
+    };
+    expect(CareerImportProposal.parse(baseProposal).importId).toBe("career-import-test");
+    expect(() =>
+      CareerImportProposal.parse({
+        ...baseProposal,
+        careerItemChanges: [
+          {
+            proposalId: "proposal-1",
+            operation: "add",
+            targetType: "career_item",
+            existingRecordId: "",
+            confidence: 0.8,
+            reason: "test",
+            sourceExcerpt: "test",
+            validationStatus: "pending",
+            validationIssues: [],
+            duplicateCandidates: [],
+            conflictDetails: [],
+            userDecision: "pending",
+            proposedValue: {
+              type: "project",
+              title: "Project",
+              organization: "",
+              location: "",
+              startDate: "",
+              endDate: "",
+              isCurrent: false,
+              shortDescription: "",
+              url: "",
+              repositoryUrl: "",
+              enabled: true,
+              rawSql: "DROP TABLE career_items",
+            },
+            existingValue: null,
+          },
+        ],
+      }),
+    ).toThrow();
   });
 });

@@ -2,6 +2,7 @@ export type CareerItemType = "project" | "employment" | "education";
 export type EvidenceStatus = "user_provided" | "verified" | "needs_review" | "prohibited";
 export type ResumeStatus = "draft" | "approved" | "exported";
 export type AIProviderMode = "mock" | "openai";
+export type SemanticSearchMode = "disabled" | "openai" | "local";
 export type ResumeGenerationSource = "ai" | "deterministic" | "user";
 export type SummaryMode = "auto" | "always" | "never";
 export type NumberControl<T extends number> = "auto" | T;
@@ -38,7 +39,85 @@ export type AIRequestType =
   | "validation_repair"
   | "bullet_regeneration"
   | "section_regeneration"
-  | "bullet_shortening";
+  | "bullet_shortening"
+  | "career_intake"
+  | "career_copilot"
+  | "embedding";
+export type CareerImportSourceType =
+  | "paste_anything"
+  | "structured_package"
+  | "guided_interview"
+  | "project_completion_report"
+  | "resume_text";
+export type CareerImportOperation = "add" | "update" | "merge" | "skip";
+export type CareerImportTargetType = "profile" | "career_item" | "career_fact" | "skill" | "relationship";
+export type CareerImportValidationStatus = "pending" | "valid" | "warning" | "conflict" | "invalid";
+export type CareerImportUserDecision = "pending" | "approved" | "edited" | "merge" | "rejected";
+export type VerificationStatus =
+  | "verified"
+  | "user_confirmed"
+  | "inferred"
+  | "unverified"
+  | "conflicting";
+export type SensitiveAnswerKey =
+  | "current_work_authorization"
+  | "future_sponsorship"
+  | "visa_status_wording"
+  | "security_clearance"
+  | "salary_expectations"
+  | "relocation"
+  | "willingness_to_travel"
+  | "start_date"
+  | "veteran_status"
+  | "disability_selection"
+  | "demographic_selections"
+  | "background_check_consent";
+export type ApplicationQuestionType =
+  | "first_name"
+  | "last_name"
+  | "full_name"
+  | "email"
+  | "phone"
+  | "address"
+  | "city"
+  | "state"
+  | "postal_code"
+  | "country"
+  | "linkedin"
+  | "github"
+  | "portfolio"
+  | "education"
+  | "degree"
+  | "graduation_date"
+  | "current_company"
+  | "current_title"
+  | "years_of_experience"
+  | "skill_experience"
+  | "work_authorization"
+  | "future_sponsorship"
+  | "salary_expectation"
+  | "start_date"
+  | "relocation"
+  | "travel"
+  | "remote_preference"
+  | "security_clearance"
+  | "why_company"
+  | "why_role"
+  | "candidate_fit"
+  | "relevant_project"
+  | "technical_challenge"
+  | "behavioral_story"
+  | "additional_information"
+  | "demographic"
+  | "legal_attestation"
+  | "unknown";
+export type ApplicationAnswerSource =
+  | "fixed_profile"
+  | "locked_sensitive"
+  | "approved_answer"
+  | "tailored_ai"
+  | "user_required";
+export type ApplicationAutomationMode = "manual" | "autofill_manual_submit";
 
 export interface Profile {
   id: string;
@@ -101,6 +180,117 @@ export interface Skill {
   enabled: boolean;
 }
 
+export interface CandidateClaim {
+  id: string;
+  category: string;
+  value: unknown;
+  verificationStatus: VerificationStatus;
+  evidenceIds: string[];
+  locked: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SensitiveAnswer {
+  id: string;
+  key: SensitiveAnswerKey;
+  label: string;
+  value: unknown;
+  verificationStatus: VerificationStatus;
+  locked: boolean;
+  requiresReview: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CandidatePreferences {
+  id: string;
+  targetRoles: string[];
+  avoidedRoles: string[];
+  industries: string[];
+  preferredCompanyStage: string;
+  preferredEngineeringEnvironment: string;
+  preferredLocations: string[];
+  salaryFloor: string;
+  preferredTechnologies: string[];
+  writingTone: string;
+  answerLengthPreference: "concise" | "standard" | "detailed";
+  wordsToAvoid: string[];
+  reuseApprovedAnswers: boolean;
+  generateCoverLetters: boolean;
+  automaticallyChooseResume: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CareerStory {
+  id: string;
+  title: string;
+  tags: string[];
+  competencies: string[];
+  situation: string;
+  problem: string;
+  actions: string[];
+  result: string;
+  metrics: string[];
+  technologies: string[];
+  evidenceIds: string[];
+  verificationStatus: VerificationStatus;
+  approved: boolean;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApprovedApplicationAnswer {
+  id: string;
+  normalizedQuestionType: ApplicationQuestionType;
+  originalQuestion: string;
+  answer: string;
+  applicableRoleFamilies: string[];
+  applicableIndustries: string[];
+  applicableSkills: string[];
+  sourceStoryIds: string[];
+  sourceClaimIds: string[];
+  tone: string;
+  approvedByUser: boolean;
+  doNotReuse: boolean;
+  useCount: number;
+  lastUsedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DetectedApplicationField {
+  id: string;
+  label: string;
+  nearbyText: string;
+  placeholder: string;
+  elementName: string;
+  elementId: string;
+  ariaLabel: string;
+  inputType: string;
+  detectedFieldType: string;
+  options: string[];
+  pageHeading: string;
+  atsPlatform: string;
+  normalizedQuestionType: ApplicationQuestionType;
+  classificationConfidence: number;
+}
+
+export interface GeneratedApplicationAnswer {
+  fieldId: string;
+  normalizedQuestionType: ApplicationQuestionType;
+  answer: string | boolean | string[];
+  answerSource: ApplicationAnswerSource;
+  confidence: number;
+  requiresReview: boolean;
+  claimIds: string[];
+  storyIds: string[];
+  warnings: string[];
+  reasoningSummary: string;
+}
+
 export interface Job {
   id: string;
   company: string;
@@ -143,6 +333,10 @@ export interface AppSettings {
   templateSettings: ResumeTemplateSettings;
   developerMode: boolean;
   uiState: AppUiState;
+  semanticSearchMode: SemanticSearchMode;
+  allowRemoteEmbeddings: boolean;
+  allowPrivateNotesInEmbeddings: boolean;
+  allowContactFieldsInCopilotContext: boolean;
 }
 
 export interface AppUiState {
@@ -423,6 +617,8 @@ export interface PromptVersionMap {
   repair: string;
   bulletRegeneration: string;
   bulletShortening: string;
+  careerIntake: string;
+  careerCopilot: string;
 }
 
 export interface AIProviderResult<T> {
@@ -469,6 +665,100 @@ export interface ResumeDiffEntry {
   explanation: string;
 }
 
+export type SearchEntityType =
+  | "profile"
+  | "career_item"
+  | "career_fact"
+  | "skill"
+  | "approved_bullet_variant"
+  | "candidate_claim"
+  | "sensitive_answer"
+  | "career_story"
+  | "approved_application_answer"
+  | "job"
+  | "job_requirement"
+  | "application"
+  | "application_field"
+  | "application_note"
+  | "resume"
+  | "resume_bullet"
+  | "evaluation_summary"
+  | "career_import"
+  | "career_copilot_summary";
+
+export interface SearchDocument {
+  id: string;
+  entityType: SearchEntityType;
+  entityId: string;
+  parentEntityType: SearchEntityType | "";
+  parentEntityId: string;
+  title: string;
+  normalizedText: string;
+  metadataJson: Record<string, unknown>;
+  contentHash: string;
+  updatedAt: string;
+}
+
+export interface SearchFilters {
+  entityTypes?: SearchEntityType[];
+  roleCategory?: string;
+  skill?: string;
+  company?: string;
+  applicationStatus?: ApplicationStatus;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface SearchResult {
+  document: SearchDocument;
+  snippet: string;
+  matchReasons: string[];
+  scores: {
+    exact: number;
+    fts: number;
+    semantic: number;
+    metadata: number;
+    recency: number;
+    final: number;
+  };
+  sourceRef: InternalCitation;
+}
+
+export interface SearchDiagnostics {
+  documentCount: number;
+  fts5Available: boolean;
+  ftsIndexHealthy: boolean;
+  embeddingProvider: SemanticSearchMode;
+  embeddingCount: number;
+  staleDocumentCount: number;
+  staleEmbeddingCount: number;
+  lastCompleteReindex: string;
+  lastSearchDurationMs: number;
+  safeMessage: string;
+}
+
+export interface SearchEmbedding {
+  id: string;
+  searchDocumentId: string;
+  provider: string;
+  model: string;
+  dimensions: number;
+  vectorJson: number[];
+  contentHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InternalCitation {
+  id: string;
+  entityType: SearchEntityType;
+  entityId: string;
+  parentEntityType: SearchEntityType | "";
+  parentEntityId: string;
+  label: string;
+  detail: string;
+}
+
 export interface ResumeQualityCheck {
   id: string;
   label: string;
@@ -484,12 +774,201 @@ export interface ApplicationRecord {
   role: string;
   jobUrl: string;
   resumeVersionId: string;
+  submittedResumeVersionId: string;
+  submittedPdfPath: string;
+  submittedPdfHash: string;
   status: ApplicationStatus;
   appliedDate: string;
+  followUpDate: string;
   referralContact: string;
+  recruiter: string;
+  hiringManager: string;
+  referral: string;
+  source: string;
+  salaryRange: string;
+  locationType: string;
+  sponsorshipNotes: string;
+  nextAction: string;
   notes: string;
+  automationMode: ApplicationAutomationMode;
+  applicationUrl: string;
+  atsPlatform: string;
+  matchScore: number | null;
+  submittedAt: string;
+  jobSnapshotJson: Job | null;
+  statusHistoryJson: Array<{ status: ApplicationStatus; changedAt: string; note: string }>;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SavedApplicationAnswer {
+  id: string;
+  jobId: string;
+  applicationId: string;
+  question: string;
+  answer: string;
+  sourceFactIds: string[];
+  sourceCitationIds: string[];
+  approvalStatus: "draft" | "approved" | "rejected";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApplicationFieldRecord {
+  id: string;
+  applicationId: string;
+  originalQuestion: string;
+  normalizedQuestionType: ApplicationQuestionType;
+  detectedFieldType: string;
+  generatedAnswer: unknown;
+  finalAnswer: unknown;
+  answerSource: ApplicationAnswerSource;
+  confidence: number;
+  requiresReview: boolean;
+  userEdited: boolean;
+  approved: boolean;
+  doNotReuse: boolean;
+  claimIds: string[];
+  storyIds: string[];
+  warnings: string[];
+  reasoningSummary: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResumeRecommendation {
+  id: string;
+  targetJobId: string;
+  candidateResumeVersionId: string;
+  overallScore: number;
+  roleScore: number;
+  skillScore: number;
+  responsibilityScore: number;
+  evidenceScore: number;
+  careerItemScore: number;
+  recencyScore: number;
+  validationScore: number;
+  explanationJson: {
+    reasons: string[];
+    matchingSkills: string[];
+    matchingResponsibilities: string[];
+    reusableContent: string[];
+    requiredChanges: string[];
+    submitted: boolean;
+    dismissed?: boolean;
+  };
+  createdAt: string;
+}
+
+export interface ResumeFavorite {
+  resumeVersionId: string;
+  createdAt: string;
+}
+
+export interface ResumeArchive {
+  resumeVersionId: string;
+  archivedAt: string;
+}
+
+export interface ResumeFamily {
+  root: ResumeVersion;
+  children: ResumeVersion[];
+}
+
+export type CareerCopilotContextType =
+  | "all"
+  | "job"
+  | "application"
+  | "resume"
+  | "career_memory"
+  | "job_search"
+  | "resume_library"
+  | "selected_projects"
+  | "selected_records";
+
+export type CareerCopilotRole = "user" | "assistant" | "system" | "tool";
+
+export type CareerCopilotToolName =
+  | "search_career_memory"
+  | "get_career_item"
+  | "get_career_fact"
+  | "search_jobs"
+  | "get_job"
+  | "analyze_job_requirements"
+  | "search_applications"
+  | "get_application"
+  | "search_resumes"
+  | "get_resume"
+  | "get_resume_lineage"
+  | "compare_resumes"
+  | "recommend_base_resumes"
+  | "find_approved_bullet_variants"
+  | "get_validation_results"
+  | "get_evaluation_results"
+  | "get_application_statistics"
+  | "get_recent_activity";
+
+export type CareerCopilotWriteActionType =
+  | "create_resume_from_base"
+  | "create_fresh_resume_draft"
+  | "add_application_note"
+  | "update_application_status"
+  | "link_resume_to_application"
+  | "favorite_resume"
+  | "archive_resume"
+  | "save_approved_answer"
+  | "create_job_from_chat";
+
+export interface CareerCopilotThread {
+  id: string;
+  title: string;
+  activeContextType: CareerCopilotContextType;
+  activeContextId: string;
+  summary: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string;
+}
+
+export interface CareerCopilotToolCall {
+  id: string;
+  name: CareerCopilotToolName | CareerCopilotWriteActionType;
+  argumentsJson: Record<string, unknown>;
+  resultSummary: string;
+}
+
+export interface CareerCopilotPendingAction {
+  id: string;
+  threadId: string;
+  messageId: string;
+  type: CareerCopilotWriteActionType;
+  label: string;
+  recordsAffected: Array<{ entityType: SearchEntityType; entityId: string; label: string }>;
+  beforeJson: Record<string, unknown>;
+  afterJson: Record<string, unknown>;
+  status: "pending" | "confirmed" | "cancelled";
+  createdAt: string;
+  resolvedAt: string;
+}
+
+export interface CareerCopilotMessage {
+  id: string;
+  threadId: string;
+  role: CareerCopilotRole;
+  content: string;
+  structuredContentJson: Record<string, unknown>;
+  toolCallsJson: CareerCopilotToolCall[];
+  internalCitationsJson: InternalCitation[];
+  pendingActionsJson: CareerCopilotPendingAction[];
+  provider: AIProviderMode | "deterministic";
+  model: string;
+  promptVersion: string;
+  tokenUsageJson: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    totalTokens: number | null;
+  };
+  createdAt: string;
 }
 
 export interface EvaluationMetrics {
@@ -581,6 +1060,131 @@ export interface EvidenceImportCandidate {
   rejected: boolean;
 }
 
+export interface CareerImportProfileValue {
+  fullName?: string;
+  headline?: string;
+  city?: string;
+  region?: string;
+  email?: string;
+  phone?: string;
+  portfolioUrl?: string;
+  linkedInUrl?: string;
+  githubUrl?: string;
+  workAuthorizationNote?: string;
+}
+
+export interface CareerImportCareerItemValue {
+  type: CareerItemType;
+  title: string;
+  organization?: string;
+  location?: string;
+  startDate?: string;
+  endDate?: string;
+  isCurrent?: boolean;
+  shortDescription?: string;
+  url?: string;
+  repositoryUrl?: string;
+  enabled?: boolean;
+}
+
+export interface CareerImportCareerFactValue {
+  statement: string;
+  careerItemId?: string;
+  careerItemTitle?: string;
+  evidenceStatus: EvidenceStatus;
+  sourceType: CareerFactSourceType;
+  sourceReference: string;
+  skillTags: string[];
+  roleTags: string[];
+  metricTokens: string[];
+  importance: number;
+  enabled: boolean;
+}
+
+export interface CareerImportSkillValue {
+  name: string;
+  category: string;
+  proficiencyNote?: string;
+  enabled?: boolean;
+}
+
+export interface CareerImportRelationshipValue {
+  fromType: CareerImportTargetType;
+  fromReference: string;
+  toType: CareerImportTargetType;
+  toReference: string;
+  relationshipType: string;
+}
+
+export type CareerImportProposedValue =
+  | CareerImportProfileValue
+  | CareerImportCareerItemValue
+  | CareerImportCareerFactValue
+  | CareerImportSkillValue
+  | CareerImportRelationshipValue;
+
+export interface CareerImportChange<T = CareerImportProposedValue> {
+  proposalId: string;
+  operation: CareerImportOperation;
+  targetType: CareerImportTargetType;
+  existingRecordId: string;
+  confidence: number;
+  reason: string;
+  sourceExcerpt: string;
+  validationStatus: CareerImportValidationStatus;
+  validationIssues: string[];
+  duplicateCandidates: string[];
+  conflictDetails: string[];
+  userDecision: CareerImportUserDecision;
+  proposedValue: T;
+  existingValue: Partial<T> | null;
+}
+
+export interface CareerImportProposal {
+  importId: string;
+  sourceType: CareerImportSourceType;
+  sourceTitle: string;
+  sourceReference: string;
+  profileChanges: Array<CareerImportChange<CareerImportProfileValue>>;
+  careerItemChanges: Array<CareerImportChange<CareerImportCareerItemValue>>;
+  careerFactChanges: Array<CareerImportChange<CareerImportCareerFactValue>>;
+  skillChanges: Array<CareerImportChange<CareerImportSkillValue>>;
+  relationshipChanges: Array<CareerImportChange<CareerImportRelationshipValue>>;
+  warnings: string[];
+  unresolvedQuestions: string[];
+  extractionMetadata: {
+    provider: AIProviderMode | "package" | "deterministic";
+    model: string;
+    promptVersion: string;
+    classifiedAs: CareerImportSourceType;
+    createdAt: string;
+  };
+}
+
+export interface CareerImportRecord {
+  id: string;
+  sourceType: CareerImportSourceType;
+  sourceTitle: string;
+  sourceReference: string;
+  createdAt: string;
+  approvedCount: number;
+  rejectedCount: number;
+  mergedCount: number;
+  recordsCreated: string[];
+  recordsUpdated: string[];
+  safeSourceHash: string;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  undoSnapshotJson: {
+    profile: Profile | null;
+    careerItems: CareerItem[];
+    careerFacts: CareerFact[];
+    skills: Skill[];
+  };
+  undoneAt: string;
+}
+
 export interface BackupPreview {
   schemaVersion: number;
   exportedAt: string;
@@ -595,11 +1199,24 @@ export interface BackupPayload {
   careerItems: CareerItem[];
   careerFacts: CareerFact[];
   skills: Skill[];
+  candidateClaims: CandidateClaim[];
+  sensitiveAnswers: SensitiveAnswer[];
+  candidatePreferences: CandidatePreferences | null;
+  careerStories: CareerStory[];
+  approvedApplicationAnswers: ApprovedApplicationAnswer[];
   jobs: Job[];
   resumes: ResumeVersion[];
   approvedVariants: ApprovedBulletVariant[];
   applications: ApplicationRecord[];
+  applicationFields: ApplicationFieldRecord[];
+  savedApplicationAnswers: SavedApplicationAnswer[];
   evaluationSummaries: EvaluationSummary[];
+  careerImports: CareerImportRecord[];
+  careerCopilotThreads: CareerCopilotThread[];
+  careerCopilotMessages: CareerCopilotMessage[];
+  resumeFavorites: ResumeFavorite[];
+  resumeArchives: ResumeArchive[];
+  resumeRecommendations: ResumeRecommendation[];
   settings: AppSettings;
   exportedAt: string;
   schemaVersion: number;

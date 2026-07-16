@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "CareerCompiler Autofill",
+  "version": "0.1.0",
+  "description": "Fill job application forms with reviewed CareerCompiler answers. Final submission remains manual.",
+  "permissions": ["activeTab", "scripting", "storage", "nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "CareerCompiler",
+    "default_popup": "popup.html"
+  }
+}

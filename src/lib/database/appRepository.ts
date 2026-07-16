@@ -23,5 +23,5 @@ export async function createAppRepository(): Promise<AppRepository> {
       return repository;
     })();
   }
-  return repositoryPromise;
+  return repositoryPromise!;
 }
