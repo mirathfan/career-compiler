@@ -23,6 +23,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { PageHeader } from "../../components/PageHeader";
 import { InlineError, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
+import { Badge, PageSection, ProgressChecklist } from "../../components/ui";
 import { JobInputSchema } from "../../schemas/forms";
 import { buildResumeGenerationRequest } from "../../lib/ai/generationRequest";
 import {
@@ -80,21 +81,28 @@ const emptyItems: CareerItem[] = [];
 const emptySkills: Skill[] = [];
 
 function StepIndicator({ step }: { step: number }) {
+  const stages = ["Job", "Base", "Evidence", "Generate", "Review", "Validate", "Preview", "Export"];
   return (
-    <div className="flex gap-2">
-      {["Job", "Profile", "Evidence", "Review"].map((label, index) => (
+    <div className="flex max-w-full flex-wrap gap-2">
+      {stages.map((label, index) => {
+        const stageStep = index < 2 ? 1 : index < 3 ? 3 : index < 4 ? 3 : 4;
+        const complete = step > stageStep;
+        const active = step === stageStep;
+        return (
         <div
           key={label}
           className={[
             "rounded border px-3 py-1 text-xs font-semibold",
-            step === index + 1
+            active
               ? "border-blue-300 bg-blue-50 text-blue-800"
-              : "border-slate-200 bg-white text-slate-500",
+              : complete
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-slate-200 bg-white text-slate-500",
           ].join(" ")}
         >
           {index + 1}. {label}
         </div>
-      ))}
+      );})}
     </div>
   );
 }
@@ -442,6 +450,38 @@ export function TailorResumePage() {
   const quality = resume && analysis && profile
     ? calculateResumeQuality({ resume, analysis, evidence, validationIssues, profile, pageCount })
     : [];
+  const exportReadiness = [
+    {
+      label: "Contact information complete",
+      detail: missingContactFields.length ? `Missing: ${missingContactFields.join(", ")}` : "Required contact fields are present.",
+      complete: missingContactFields.length === 0,
+      warning: true,
+    },
+    {
+      label: "All claims supported",
+      detail: hasBlockingIssues ? "Resolve blocking validation errors." : "No blocking validation errors.",
+      complete: !hasBlockingIssues,
+      warning: true,
+    },
+    {
+      label: "Generated bullets approved",
+      detail: hasUnapprovedIncludedBullets ? "Accept or reject each included bullet." : "Every included bullet has been reviewed.",
+      complete: !hasUnapprovedIncludedBullets,
+      warning: true,
+    },
+    {
+      label: "One-page estimate",
+      detail: `${pageCount} estimated page${pageCount === 1 ? "" : "s"}. Export performs a real PDF page check.`,
+      complete: pageCount === 1,
+      warning: true,
+    },
+    {
+      label: "PDF export ready",
+      detail: exportBlockReason || "Ready to compile and export.",
+      complete: Boolean(resume) && !exportBlockReason,
+      warning: true,
+    },
+  ];
 
   const saveGeneratedVersion = async (
     nextResume: NonNullable<typeof resume>,
@@ -733,8 +773,20 @@ export function TailorResumePage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Evidence-grounded workflow" title="Tailor Resume" actions={<StepIndicator step={step} />} />
-      <div className="space-y-5 p-8">
+      <PageHeader
+        eyebrow="Evidence-grounded workflow"
+        title="Tailor Resume"
+        description="Move from job description to reviewed, validated, one-page PDF without letting unsupported claims slip through."
+        meta={
+          <>
+            <Badge tone={job ? "emerald" : "slate"}>{job ? "job analyzed" : "job not selected"}</Badge>
+            <Badge tone={selectedEvidence.length ? "blue" : "slate"}>{selectedEvidence.length} evidence facts selected</Badge>
+            <Badge tone={!exportBlockReason && resume ? "emerald" : "amber"}>{resume ? (exportBlockReason ? "export blocked" : "export ready") : "draft not generated"}</Badge>
+          </>
+        }
+        actions={<StepIndicator step={step} />}
+      />
+      <div className="page-body space-y-5">
         {error ? (
           <div className="space-y-2">
             <InlineError message={error} />
@@ -751,7 +803,7 @@ export function TailorResumePage() {
 
         {step === 1 ? (
           <form className="panel space-y-4 p-5" onSubmit={form.handleSubmit((values) => analyzeMutation.mutate(values))}>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid gap-3 md:grid-cols-3">
               <label className="text-sm font-semibold text-slate-700">Company<input className="field mt-1" {...form.register("company")} /></label>
               <label className="text-sm font-semibold text-slate-700">Role title<input className="field mt-1" {...form.register("roleTitle")} /></label>
               <label className="text-sm font-semibold text-slate-700">Job URL<input className="field mt-1" {...form.register("sourceUrl")} /></label>
@@ -795,7 +847,7 @@ export function TailorResumePage() {
         ) : null}
 
         {step === 2 && analysis ? (
-          <div className="grid grid-cols-[1fr_320px] gap-5">
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
             <section className="panel p-5">
               <h3 className="text-lg font-semibold text-slate-950">Job analysis</h3>
               <p className="mt-2 text-sm leading-6 text-slate-700">{analysis.summary}</p>
@@ -824,7 +876,7 @@ export function TailorResumePage() {
         ) : null}
 
         {step === 3 && analysis ? (
-          <div className="grid grid-cols-[1fr_340px] gap-5">
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
             <section><EvidenceTable evidence={evidence} overrides={overrides} controls={controls} onToggle={(factId, included) => setOverrides((current) => ({ ...current, [factId]: included }))} onControls={setControls} /></section>
             <aside className="panel h-fit p-5">
               <h3 className="text-lg font-semibold text-slate-950">Tailoring controls</h3>
@@ -841,7 +893,7 @@ export function TailorResumePage() {
         ) : null}
 
         {step === 4 && resume && profile && analysis ? (
-          <div className="grid grid-cols-[minmax(0,1fr)_720px] gap-5">
+          <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_620px]">
             <section className="space-y-4">
               <div className="panel flex flex-wrap items-center gap-2 p-4">
                 <div className="mr-auto">
@@ -962,10 +1014,20 @@ export function TailorResumePage() {
                 </div>
               ))}
             </section>
-            <aside className="sticky top-0 h-screen overflow-auto border-l border-slate-200 bg-slate-100 p-5">
+            <aside className="space-y-4 2xl:sticky 2xl:top-0 2xl:h-screen 2xl:overflow-auto">
+              <PageSection title="Export readiness" description="Export remains disabled until every critical check passes.">
+                <ProgressChecklist items={exportReadiness} />
+                {exportBlockReason ? (
+                  <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                    {exportBlockReason}
+                  </p>
+                ) : null}
+              </PageSection>
+              <div className="panel bg-slate-100 p-4">
               <Suspense fallback={<LoadingState label="Loading resume preview..." />}>
                 <ResumePreview resume={resume} validationIssues={visibleValidationIssues} pageCount={pageCount} />
               </Suspense>
+              </div>
               {resume.compactionActions.length ? (
                 <div className="mt-4 rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
                   <p className="font-semibold text-slate-800">Compaction log</p>

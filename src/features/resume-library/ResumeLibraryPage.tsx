@@ -1,10 +1,11 @@
-import { Fragment, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { Link, useSearchParams } from "react-router-dom";
 import { Archive, Bot, Copy, FolderOpen, RefreshCcw, Star, Trash2, WandSparkles } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
+import { Badge, PageSection, SearchInput, StatusBadge, StatCard } from "../../components/ui";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { allResumeBullets } from "../../lib/resume/validation";
 import { generateResumeRecommendations } from "../../lib/search/resumeRecommendations";
@@ -151,18 +152,23 @@ export function ResumeLibraryPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Local versions" title="Resume Library" />
-      <div className="space-y-4 p-8">
+      <PageHeader
+        eyebrow="Local versions"
+        title="Resume Library"
+        description="Find, compare, reuse, and manage generated resumes without exposing raw version IDs as the primary interface."
+        meta={
+          <>
+            <Badge tone="blue">{resumesQuery.data?.length ?? 0} total</Badge>
+            <Badge tone="amber">{favoriteIds.size} favorites</Badge>
+            <Badge tone="emerald">{submittedIds.size} used in applications</Badge>
+          </>
+        }
+      />
+      <div className="page-body space-y-5">
         {error ? <InlineError message={error} /> : null}
-        <section className="panel p-4">
-          <div className="grid grid-cols-[minmax(220px,1fr)_180px_minmax(220px,1fr)_auto] gap-3">
-            <input
-              className="field"
-              data-search-input
-              placeholder="Search resumes, companies, roles, skills, bullets"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
+        <PageSection title="Find a resume" description="Search by company, role, skill, or bullet text. Generate recommendations against a saved job when you need a base version.">
+          <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_180px_minmax(220px,1fr)_auto]">
+            <SearchInput value={search} onChange={setSearch} placeholder="Search resumes, companies, roles, skills, bullets" />
             <select className="field" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               <option value="active">Active</option>
               <option value="favorite">Favorite</option>
@@ -186,7 +192,7 @@ export function ResumeLibraryPage() {
             </button>
           </div>
           {targetJobId && recommendationsQuery.data?.length ? (
-            <div className="mt-4 grid grid-cols-3 gap-3">
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
               {recommendationsQuery.data.filter((item) => !item.explanationJson.dismissed).slice(0, 3).map((recommendation) => {
                 const resume = (resumesQuery.data ?? []).find((item) => item.id === recommendation.candidateResumeVersionId);
                 return (
@@ -207,13 +213,16 @@ export function ResumeLibraryPage() {
               })}
             </div>
           ) : null}
-        </section>
+        </PageSection>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <StatCard label="Visible resumes" value={resumes.length} detail={`Filtered by ${statusFilter}`} />
+          <StatCard label="Validation clear" value={resumes.filter((resume) => !resume.validationJson.some((issue) => issue.severity === "error")).length} detail="No blocking validation errors" tone="emerald" />
+          <StatCard label="Exported PDFs" value={resumes.filter((resume) => resume.lastExportPath).length} detail="Can reveal from Finder" />
+        </div>
+
         {regenerationResult ? (
-          <div className="panel p-4">
-            <h3 className="font-semibold text-slate-950">Regeneration diff</h3>
-            <p className="mt-1 text-sm text-slate-600">
-              Created {regenerationResult.child.name} from parent {regenerationResult.parent.name}. The parent remains unchanged.
-            </p>
+          <PageSection title="Regeneration diff" description={`Created ${regenerationResult.child.name} from parent ${regenerationResult.parent.name}. The parent remains unchanged.`}>
             <div className="mt-3 max-h-64 space-y-2 overflow-auto">
               {regenerationResult.diff.map((entry, index) => (
                 <div key={`${entry.category}-${index}`} className="border-b border-slate-100 pb-2 text-sm">
@@ -223,10 +232,10 @@ export function ResumeLibraryPage() {
                 </div>
               ))}
             </div>
-          </div>
+          </PageSection>
         ) : null}
         {regenerateId ? (
-          <div className="panel flex items-center gap-4 p-4">
+          <div className="panel flex flex-wrap items-center gap-4 p-4">
             <div className="mr-auto">
               <h3 className="font-semibold text-slate-950">Regenerate as a child version</h3>
               <p className="text-sm text-slate-600">Current Career Memory will be reranked and locked content will be preserved.</p>
@@ -247,145 +256,113 @@ export function ResumeLibraryPage() {
             body="Generate a tailored resume from the Tailor Resume workflow and it will appear here."
           />
         ) : (
-          <div className="panel overflow-hidden">
-            <table className="w-full border-collapse text-sm">
-              <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">Company</th>
-                  <th className="px-4 py-3">Role</th>
-                  <th className="px-4 py-3">Created</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Version</th>
-                  <th className="px-4 py-3">Validation</th>
-                  <th className="px-4 py-3">Export path</th>
-                  <th className="px-4 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {resumes.map((resume) => {
-                  const job = jobById.get(resume.jobId);
-                  const errors = resume.validationJson.filter((issue) => issue.severity === "error").length;
-                  const isFavorite = favoriteIds.has(resume.id);
-                  const isArchived = archivedIds.has(resume.id);
-                  const isSubmitted = submittedIds.has(resume.id);
-                  return (
-                    <Fragment key={resume.id}>
-                    <tr className="align-top">
-                      <td className="px-4 py-3 font-semibold text-slate-950">{job?.company || "Unknown"}</td>
-                      <td className="px-4 py-3">{job?.roleTitle || resume.name}</td>
-                      <td className="px-4 py-3 text-slate-600">
-                        {new Date(resume.createdAt).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1">
-                          <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{resume.status === "draft" ? "Draft" : "Ready"}</span>
-                          {isSubmitted ? <span className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">Submitted</span> : null}
-                          {isFavorite ? <span className="rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-700">Favorite</span> : null}
-                          {isArchived ? <span className="rounded-md bg-slate-200 px-2 py-1 text-xs font-semibold text-slate-600">Archived</span> : null}
+          <div className="grid gap-4 xl:grid-cols-2">
+            {resumes.map((resume) => {
+              const job = jobById.get(resume.jobId);
+              const errors = resume.validationJson.filter((issue) => issue.severity === "error").length;
+              const isFavorite = favoriteIds.has(resume.id);
+              const isArchived = archivedIds.has(resume.id);
+              const isSubmitted = submittedIds.has(resume.id);
+              const includedBullets = [...resume.contentJson.projects, ...resume.contentJson.experience].flatMap((section) =>
+                section.bullets.filter((bullet) => bullet.included).map((bullet) => ({ section: section.title, text: bullet.text, id: bullet.id })),
+              );
+              return (
+                <article key={resume.id} className="panel p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-500">{job?.company || "Saved resume"}</p>
+                      <h3 className="mt-1 truncate text-lg font-semibold text-slate-950">{job?.roleTitle || resume.name}</h3>
+                      <p className="mt-1 text-sm text-slate-600">{resume.name}</p>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      <StatusBadge status={resume.status === "draft" ? "draft" : "ready"} />
+                      {errors ? <Badge tone="red">{errors} validation errors</Badge> : <Badge tone="emerald">validation clear</Badge>}
+                      {isSubmitted ? <Badge tone="emerald">used in application</Badge> : null}
+                      {isFavorite ? <Badge tone="amber">favorite</Badge> : null}
+                      {isArchived ? <Badge>archived</Badge> : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+                    <div><p className="eyebrow">Created</p><p className="mt-1 text-slate-700">{new Date(resume.createdAt).toLocaleDateString()}</p></div>
+                    <div><p className="eyebrow">Version</p><p className="mt-1 text-slate-700">{resume.parentResumeVersionId ? "Child" : "Root"}</p></div>
+                    <div><p className="eyebrow">Applications</p><p className="mt-1 text-slate-700">{isSubmitted ? "Used" : "Not used"}</p></div>
+                    <div><p className="eyebrow">Export</p><p className="mt-1 truncate text-slate-700">{resume.lastExportPath ? "PDF exported" : "Not exported"}</p></div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button className="button" type="button" onClick={() => setOpenResumeId((current) => current === resume.id ? "" : resume.id)}>
+                      {openResumeId === resume.id ? "Hide details" : "Preview"}
+                    </button>
+                    <button className="button" type="button" onClick={() => duplicateResume.mutate(resume.id)}>
+                      <Copy size={14} aria-hidden="true" /> Duplicate
+                    </button>
+                    <Link className="button" to={`/copilot?contextType=resume&contextId=${encodeURIComponent(resume.id)}`}>
+                      <Bot size={14} aria-hidden="true" /> Ask Copilot
+                    </Link>
+                    <button className={isFavorite ? "button border-amber-300 bg-amber-50 text-amber-800" : "button"} type="button" onClick={() => toggleFavorite.mutate({ id: resume.id, favorite: !isFavorite })}>
+                      <Star size={14} aria-hidden="true" /> {isFavorite ? "Unfavorite" : "Favorite"}
+                    </button>
+                    <button className="button" type="button" onClick={() => setRegenerateId(resume.id)}>
+                      <RefreshCcw size={14} aria-hidden="true" /> Regenerate
+                    </button>
+                    <button
+                      className="button"
+                      type="button"
+                      disabled={!resume.lastExportPath}
+                      onClick={async () => {
+                        try {
+                          await invoke("reveal_in_finder", { path: resume.lastExportPath });
+                        } catch (caught) {
+                          console.error("Reveal in Finder failed", caught);
+                          setError(caught instanceof Error ? caught.message : String(caught));
+                        }
+                      }}
+                    >
+                      <FolderOpen size={14} aria-hidden="true" /> Reveal
+                    </button>
+                    <button className="button" type="button" onClick={() => toggleArchive.mutate({ id: resume.id, archived: !isArchived })}>
+                      <Archive size={14} aria-hidden="true" /> {isArchived ? "Unarchive" : "Archive"}
+                    </button>
+                    <button
+                      className="button button-danger"
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Delete ${resume.name}? This cannot be undone.`)) {
+                          deleteResume.mutate(resume.id);
+                        }
+                      }}
+                    >
+                      <Trash2 size={14} aria-hidden="true" /> Delete
+                    </button>
+                  </div>
+
+                  {openResumeId === resume.id ? (
+                    <div className="mt-4 border-t border-slate-200 pt-4">
+                      <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
+                        <div className="text-sm">
+                          <p className="font-semibold text-slate-950">Generation</p>
+                          <p className="mt-1 text-slate-600">{resume.generationProvider} | {resume.generationModel || "No model recorded"}</p>
+                          <p className="text-slate-600">Prompt {resume.promptVersion || "legacy"}</p>
+                          {resume.parentResumeVersionId ? <p className="mt-2 text-slate-600">Child of an earlier resume version</p> : null}
+                          {resume.lastExportPath ? <p className="mt-2 break-all text-xs text-slate-500">{resume.lastExportPath}</p> : null}
                         </div>
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{resume.parentResumeVersionId ? "Child" : "Root"}</td>
-                      <td className={errors ? "px-4 py-3 text-red-700" : "px-4 py-3 text-emerald-700"}>
-                        {errors ? `${errors} errors` : "No errors"}
-                      </td>
-                      <td className="max-w-64 truncate px-4 py-3 text-slate-500">
-                        {resume.lastExportPath || "Not exported"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            className="button"
-                            type="button"
-                            onClick={() => setOpenResumeId((current) => current === resume.id ? "" : resume.id)}
-                          >
-                            Open
-                          </button>
-                          <button className="button" type="button" onClick={() => duplicateResume.mutate(resume.id)}>
-                            <Copy size={14} aria-hidden="true" />
-                          </button>
-                          <Link className="button" title="Ask Career Copilot" to={`/copilot?contextType=resume&contextId=${encodeURIComponent(resume.id)}`}>
-                            <Bot size={14} aria-hidden="true" />
-                          </Link>
-                          <button
-                            className={isFavorite ? "button border-amber-300 bg-amber-50 text-amber-800" : "button"}
-                            type="button"
-                            title={isFavorite ? "Remove favorite" : "Favorite resume"}
-                            onClick={() => toggleFavorite.mutate({ id: resume.id, favorite: !isFavorite })}
-                          >
-                            <Star size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            className="button"
-                            type="button"
-                            onClick={() => setRegenerateId(resume.id)}
-                            title="Regenerate as child version"
-                          >
-                            <RefreshCcw size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            className="button"
-                            type="button"
-                            disabled={!resume.lastExportPath}
-                            onClick={async () => {
-                              try {
-                                await invoke("reveal_in_finder", { path: resume.lastExportPath });
-                              } catch (caught) {
-                                console.error("Reveal in Finder failed", caught);
-                                setError(caught instanceof Error ? caught.message : String(caught));
-                              }
-                            }}
-                          >
-                            <FolderOpen size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            className="button"
-                            type="button"
-                            title={isArchived ? "Unarchive resume" : "Archive resume"}
-                            onClick={() => toggleArchive.mutate({ id: resume.id, archived: !isArchived })}
-                          >
-                            <Archive size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            className="button button-danger"
-                            type="button"
-                            onClick={() => {
-                              if (window.confirm(`Delete ${resume.name}? This cannot be undone.`)) {
-                                deleteResume.mutate(resume.id);
-                              }
-                            }}
-                          >
-                            <Trash2 size={14} aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                    {openResumeId === resume.id ? (
-                      <tr>
-                        <td colSpan={8} className="bg-slate-50 px-5 py-4">
-                          <div className="grid grid-cols-[260px_1fr] gap-5 text-sm">
-                            <div>
-                              <p className="font-semibold text-slate-950">Generation</p>
-                              <p className="mt-1 text-slate-600">{resume.generationProvider} | {resume.generationModel || "no model"}</p>
-                              <p className="text-slate-600">Prompt {resume.promptVersion || "legacy"}</p>
-                              {resume.parentResumeVersionId ? <p className="mt-2 text-slate-600">Parent: {resume.parentResumeVersionId}</p> : null}
-                            </div>
-                            <div>
-                              <p className="font-semibold text-slate-950">Included bullets</p>
-                              {[...resume.contentJson.projects, ...resume.contentJson.experience].flatMap((section) =>
-                                section.bullets.filter((bullet) => bullet.included).map((bullet) => (
-                                  <p key={bullet.id} className="mt-1 text-slate-600"><strong>{section.title}:</strong> {bullet.text}</p>
-                                )),
-                              )}
-                            </div>
+                        <div className="text-sm">
+                          <p className="font-semibold text-slate-950">Included bullets</p>
+                          <div className="mt-2 max-h-72 space-y-2 overflow-auto">
+                            {includedBullets.map((bullet) => (
+                              <p key={bullet.id} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700">
+                                <strong>{bullet.section}:</strong> {bullet.text}
+                              </p>
+                            ))}
                           </div>
-                        </td>
-                      </tr>
-                    ) : null}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
           </div>
         )}
       </div>

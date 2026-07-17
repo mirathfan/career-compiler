@@ -1,21 +1,30 @@
 import type { ReactNode } from "react";
+import { clsx } from "clsx";
 
 export function PageHeader({
   title,
   eyebrow,
+  description,
   actions,
+  meta,
 }: {
   title: string;
   eyebrow: string;
+  description?: string;
   actions?: ReactNode;
+  meta?: ReactNode;
 }) {
   return (
-    <header className="flex items-start justify-between gap-6 border-b border-slate-200 bg-white px-8 py-6">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">{eyebrow}</p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-normal text-slate-950">{title}</h2>
+    <header className="border-b border-slate-200/80 bg-white/95 px-5 py-5 backdrop-blur md:px-8">
+      <div className={clsx("mx-auto flex w-full max-w-[1560px] flex-wrap items-start justify-between gap-5")}>
+        <div className="min-w-0">
+          <p className="eyebrow">{eyebrow}</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-normal text-slate-950">{title}</h2>
+          {description ? <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p> : null}
+          {meta ? <div className="mt-3 flex flex-wrap gap-2">{meta}</div> : null}
+        </div>
+        {actions ? <div className="flex max-w-full flex-wrap items-center justify-end gap-2">{actions}</div> : null}
       </div>
-      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
     </header>
   );
 }

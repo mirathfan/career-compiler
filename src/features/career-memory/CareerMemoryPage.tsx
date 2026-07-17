@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useSearchParams } from "react-router-dom";
 import {
   ArrowDown,
   ArrowUp,
@@ -18,6 +19,7 @@ import {
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
+import { AlertBanner, Badge, PageSection, SearchInput, StatCard, StatusBadge } from "../../components/ui";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { parseCsv } from "../../lib/utils";
 import { extractNumericTokens } from "../../lib/resume/validation";
@@ -423,6 +425,7 @@ function FactEditor({
 export function CareerMemoryPage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newItem, setNewItem] = useState(emptyItem("project"));
   const [newSkill, setNewSkill] = useState<Partial<Skill> & Pick<Skill, "name" | "category">>({
@@ -438,7 +441,10 @@ export function CareerMemoryPage() {
   const [importCandidates, setImportCandidates] = useState<EvidenceImportCandidate[]>([]);
   const [importFileName, setImportFileName] = useState("");
   const [importError, setImportError] = useState("");
-  const [showSmartIntake, setShowSmartIntake] = useState(false);
+  const [showSmartIntake, setShowSmartIntake] = useState(() => searchParams.get("intake") === "1");
+  useEffect(() => {
+    if (searchParams.get("intake") === "1") setShowSmartIntake(true);
+  }, [searchParams]);
   const itemsQuery = useQuery({ queryKey: ["career-items"], queryFn: () => repository.listCareerItems() });
   const factsQuery = useQuery({
     queryKey: ["career-facts", search, status],
@@ -602,19 +608,43 @@ export function CareerMemoryPage() {
       <PageHeader
         eyebrow="Evidence database"
         title="Career Memory"
+        description="Add source-backed career facts, keep review status visible, and import only explicitly selected local evidence."
+        meta={
+          <>
+            <Badge tone="blue">{items.length} career items</Badge>
+            <Badge tone={facts.filter((fact) => fact.evidenceStatus === "needs_review").length ? "amber" : "emerald"}>
+              {facts.filter((fact) => fact.evidenceStatus === "needs_review").length} need review
+            </Badge>
+            <Badge>{skills.filter((skill) => skill.enabled).length} active skills</Badge>
+          </>
+        }
         actions={
-          <div className="flex gap-2">
-            <button className="button" type="button" onClick={() => setShowSmartIntake((value) => !value)}>
+          <div className="flex flex-wrap gap-2">
+            <button className="button button-primary" type="button" onClick={() => setShowSmartIntake((value) => !value)}>
               <FileInput size={15} aria-hidden="true" />
-              Import career information
-            </button>
-            <button className="button" type="button" onClick={() => seed.mutate()}>
-              Run safe seed
+              Smart intake
             </button>
           </div>
         }
       />
-      <div className="grid grid-cols-[390px_1fr] gap-6 p-8">
+      <div className="page-body space-y-5">
+        <div className="grid gap-4 md:grid-cols-3">
+          <StatCard label="Reviewed facts" value={facts.filter((fact) => fact.evidenceStatus === "verified" || fact.evidenceStatus === "user_provided").length} detail="Eligible for grounded resume generation when enabled" />
+          <StatCard label="Review queue" value={facts.filter((fact) => (reviewReasonsByFact.get(fact.id)?.length ?? 0) > 0).length} tone="amber" detail="Numeric, stale, duplicate, or source-missing facts" />
+          <StatCard label="Resume usage" value={usageByFact.size} detail="Facts already used in generated resumes" />
+        </div>
+
+        {showSmartIntake ? (
+          <SmartCareerIntake
+            items={items}
+            facts={facts}
+            skills={skills}
+            selectedItemId={selected?.id ?? null}
+            onDone={invalidate}
+          />
+        ) : null}
+
+        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside className="space-y-4">
           <div className="panel p-4">
             <h3 className="text-base font-semibold text-slate-950">Add career item</h3>
@@ -635,7 +665,7 @@ export function CareerMemoryPage() {
             {items.length === 0 ? (
               <EmptyState
                 title="No items"
-                body="Run the seed process or add a project, employment record, or education entry."
+                body="Add a project, employment record, or education entry before attaching source facts."
               />
             ) : (
               <div className="mt-3 space-y-4">
@@ -658,8 +688,9 @@ export function CareerMemoryPage() {
                           onClick={() => setSelectedId(item.id)}
                         >
                           <span className="block font-semibold text-slate-950">{item.title}</span>
-                          <span className="mt-1 block text-xs text-slate-500">
-                            {counts.get(item.id) ?? 0} facts {item.enabled ? "" : " | disabled"}
+                          <span className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
+                            <Badge>{counts.get(item.id) ?? 0} facts</Badge>
+                            {!item.enabled ? <StatusBadge status="disabled" /> : null}
                           </span>
                         </button>
                       ))}
@@ -700,28 +731,19 @@ export function CareerMemoryPage() {
               <TagList tags={skills.filter((skill) => skill.enabled).map((skill) => skill.name)} />
             </div>
           </div>
+          <details className="panel-muted p-4 text-sm text-slate-600">
+            <summary className="cursor-pointer font-semibold text-slate-800">Development sample data</summary>
+            <p className="mt-2 leading-6">Load sanitized sample records to test layouts and generation workflows.</p>
+            <button className="button mt-3" type="button" onClick={() => seed.mutate()} disabled={seed.isPending}>
+              Run safe seed
+            </button>
+          </details>
         </aside>
 
         <section className="space-y-4">
-          {showSmartIntake ? (
-            <SmartCareerIntake
-              items={items}
-              facts={facts}
-              skills={skills}
-              selectedItemId={selected?.id ?? null}
-              onDone={invalidate}
-            />
-          ) : null}
-
-          <div className="panel p-4">
-            <div className="grid grid-cols-[1fr_220px] gap-3">
-              <input
-                className="field"
-                data-search-input
-                placeholder="Search facts, skill tags, or role tags"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
+          <PageSection title="Fact review" description="Search and filter the selected item’s facts before marking them verified, disabled, or ready for generation.">
+            <div className="grid gap-3 md:grid-cols-[minmax(220px,1fr)_220px]">
+              <SearchInput value={search} onChange={setSearch} placeholder="Search facts, skill tags, or role tags" />
               <select className="field" value={status} onChange={(event) => setStatus(event.target.value)}>
                 <option value="">All evidence statuses</option>
                 {evidenceStatuses.map((value) => (
@@ -739,16 +761,17 @@ export function CareerMemoryPage() {
               />
               Review queue only {selected ? `(${selectedReviewCount})` : ""}
             </label>
-          </div>
+          </PageSection>
 
           {!selected ? (
             <EmptyState title="Select an item" body="Choose or create a career item to edit facts." />
           ) : (
             <>
-              <div className="panel p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-lg font-semibold text-slate-950">Edit item</h3>
-                  <div className="flex gap-2">
+              <PageSection
+                title="Edit item"
+                description="Keep source material organized by project, employment, and education so resume generation can cite the right evidence."
+                actions={
+                  <>
                     <button className="button" type="button" onClick={() => moveItem(selected, -1)}>
                       <ArrowUp size={15} aria-hidden="true" />
                     </button>
@@ -759,6 +782,7 @@ export function CareerMemoryPage() {
                       className="button button-danger"
                       type="button"
                       onClick={() => {
+                        if (!window.confirm(`Delete ${selected.title}? Its facts will no longer be available.`)) return;
                         deleteItem.mutate(selected.id);
                         setSelectedId(null);
                       }}
@@ -766,8 +790,9 @@ export function CareerMemoryPage() {
                       <Trash2 size={15} aria-hidden="true" />
                       Delete
                     </button>
-                  </div>
-                </div>
+                  </>
+                }
+              >
                 {saveItem.isError ? <InlineError message="Could not save career item." /> : null}
                 <div className="mt-4">
                   <ItemForm
@@ -777,10 +802,9 @@ export function CareerMemoryPage() {
                     saveLabel="Save item"
                   />
                 </div>
-              </div>
+              </PageSection>
 
-              <div className="panel p-4">
-                <h3 className="text-lg font-semibold text-slate-950">Add fact</h3>
+              <PageSection title="Add fact" description="Facts begin editable and should be reviewed before relying on them in a resume or application answer.">
                 <button
                   className="button mt-3"
                   type="button"
@@ -794,21 +818,21 @@ export function CareerMemoryPage() {
                   <Plus size={15} aria-hidden="true" />
                   Add fact
                 </button>
-              </div>
+              </PageSection>
 
-              <div className="panel p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-semibold text-slate-950">Import local evidence</h3>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Inspect a selected text or manifest file. Nothing is executed or saved without approval.
-                    </p>
-                  </div>
+              <PageSection
+                title="Import local evidence"
+                description="Inspect a selected text or manifest file. Nothing is executed or saved without approval."
+                actions={
                   <button className="button" type="button" onClick={chooseEvidenceFile}>
                     <FileInput size={15} aria-hidden="true" />
                     Choose file
                   </button>
-                </div>
+                }
+              >
+                <AlertBanner tone="blue" title="Imports are read-only until approval">
+                  CareerCompiler reads only the file you choose, extracts candidate statements, and saves only the candidates you approve.
+                </AlertBanner>
                 {importError ? <InlineError message={importError} /> : null}
                 {importCandidates.length ? (
                   <div className="mt-4 space-y-3">
@@ -866,7 +890,7 @@ export function CareerMemoryPage() {
                     </button>
                   </div>
                 ) : null}
-              </div>
+              </PageSection>
 
               <div className="space-y-3">
                 {itemFacts.length ? (
@@ -939,6 +963,7 @@ export function CareerMemoryPage() {
           )}
         </section>
       </div>
+    </div>
     </div>
   );
 }

@@ -39,8 +39,8 @@ export function EvaluationPage() {
   if (!loadedProfile) {
     return (
       <div>
-        <PageHeader eyebrow="Repeatable generation QA" title="Evaluation Lab" />
-        <div className="p-8">
+        <PageHeader eyebrow="Repeatable generation QA" title="Evaluation Lab" description="Run safe fixture-based checks after setting up Career Memory." />
+        <div className="page-body">
           <EmptyState
             title="Set up Career Memory first"
             body="Evaluation fixtures need a candidate profile, career items, facts, and skills. Load the sample profile or add career memory before running ranking, mock, or live OpenAI evaluations."
@@ -81,8 +81,8 @@ export function EvaluationPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Repeatable generation QA" title="Evaluation Lab" />
-      <div className="space-y-5 p-8">
+      <PageHeader eyebrow="Repeatable generation QA" title="Evaluation Lab" description="Run safe fixture-based checks for generation quality without treating the model as the source of truth." />
+      <div className="page-body space-y-5">
         {error ? <InlineError message={error} /> : null}
         <section className="panel flex flex-wrap items-center gap-3 p-5">
           <div className="mr-auto"><h3 className="text-lg font-semibold text-slate-950">Six role fixtures</h3><p className="mt-1 text-sm text-slate-600">Objective checks only. No invented ATS score and no automatic model winner.</p></div>
@@ -91,7 +91,7 @@ export function EvaluationPage() {
           <button className="button" type="button" disabled={Boolean(running)} onClick={() => void runSuite("openai")}><Play size={16} />{running === "openai" ? "Running paid suite..." : "Live OpenAI suite"}</button>
         </section>
 
-        <section className="overflow-hidden rounded-md border border-slate-200 bg-white">
+        <section className="responsive-table overflow-hidden rounded-md border border-slate-200 bg-white">
           <table className="w-full text-left text-xs">
             <thead className="border-b border-slate-200 bg-slate-50 uppercase text-slate-500"><tr><th className="px-3 py-3">Compare</th><th className="px-3 py-3">Fixture</th><th className="px-3 py-3">Configuration</th><th className="px-3 py-3">Projects</th><th className="px-3 py-3">Skills</th><th className="px-3 py-3">Safety</th><th className="px-3 py-3">Fit / time</th><th className="px-3 py-3">Actions</th></tr></thead>
             <tbody>{runs.map((run) => {

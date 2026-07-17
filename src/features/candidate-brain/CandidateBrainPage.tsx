@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, Check, Lock, Plus, Save, Trash2, Unlock } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { Archive, BookOpenCheck, Check, FileText, Lock, Plus, Save, ShieldAlert, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
+import { AlertBanner, Badge, PageSection, ProgressChecklist, SearchInput, SensitiveBadge, StatCard, Tabs, VerificationBadge } from "../../components/ui";
 import { generateApplicationAnswers } from "../../lib/applications/answerEngine";
 import { normalizeDetectedField } from "../../lib/applications/questionClassifier";
 import { useRepository } from "../../lib/database/repositoryContext";
@@ -83,9 +85,12 @@ function PreferencesPanel({
     automaticallyChooseResume: preferences?.automaticallyChooseResume ?? false,
   }));
   return (
-    <section className="panel p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-base font-semibold text-slate-950">Preferences</h3>
+    <section className="panel p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Preferences</h3>
+          <p className="mt-1 text-sm leading-6 text-slate-600">Set reusable targeting defaults. These guide generation but do not create unsupported claims.</p>
+        </div>
         <button
           className="button"
           type="button"
@@ -110,16 +115,16 @@ function PreferencesPanel({
           Save
         </button>
       </div>
-      <div className="mt-4 grid grid-cols-3 gap-3 text-sm font-semibold text-slate-700">
+      <div className="mt-4 grid gap-3 text-sm font-semibold text-slate-700 md:grid-cols-2 xl:grid-cols-3">
         <label>Target roles<input className="field mt-1" value={draft.targetRoles} onChange={(event) => setDraft({ ...draft, targetRoles: event.target.value })} /></label>
         <label>Avoided roles<input className="field mt-1" value={draft.avoidedRoles} onChange={(event) => setDraft({ ...draft, avoidedRoles: event.target.value })} /></label>
         <label>Industries<input className="field mt-1" value={draft.industries} onChange={(event) => setDraft({ ...draft, industries: event.target.value })} /></label>
         <label>Preferred locations<input className="field mt-1" value={draft.preferredLocations} onChange={(event) => setDraft({ ...draft, preferredLocations: event.target.value })} /></label>
         <label>Salary floor<input className="field mt-1" value={draft.salaryFloor} onChange={(event) => setDraft({ ...draft, salaryFloor: event.target.value })} /></label>
         <label>Preferred technologies<input className="field mt-1" value={draft.preferredTechnologies} onChange={(event) => setDraft({ ...draft, preferredTechnologies: event.target.value })} /></label>
-        <label className="col-span-2">Writing tone<input className="field mt-1" value={draft.writingTone} onChange={(event) => setDraft({ ...draft, writingTone: event.target.value })} /></label>
+        <label className="md:col-span-2">Writing tone<input className="field mt-1" value={draft.writingTone} onChange={(event) => setDraft({ ...draft, writingTone: event.target.value })} /></label>
         <label>Answer length<select className="field mt-1" value={draft.answerLengthPreference} onChange={(event) => setDraft({ ...draft, answerLengthPreference: event.target.value as CandidatePreferences["answerLengthPreference"] })}><option value="concise">concise</option><option value="standard">standard</option><option value="detailed">detailed</option></select></label>
-        <label className="col-span-3">Words to avoid<input className="field mt-1" value={draft.wordsToAvoid} onChange={(event) => setDraft({ ...draft, wordsToAvoid: event.target.value })} /></label>
+        <label className="md:col-span-2 xl:col-span-3">Words to avoid<input className="field mt-1" value={draft.wordsToAvoid} onChange={(event) => setDraft({ ...draft, wordsToAvoid: event.target.value })} /></label>
       </div>
       <div className="mt-3 flex flex-wrap gap-4 text-sm font-semibold text-slate-700">
         <label className="flex items-center gap-2"><input type="checkbox" checked={draft.reuseApprovedAnswers} onChange={(event) => setDraft({ ...draft, reuseApprovedAnswers: event.target.checked })} />Reuse approved answers</label>
@@ -153,18 +158,24 @@ function SensitiveVault({
   }, [answers]);
 
   return (
-    <section className="panel p-4">
-      <h3 className="text-base font-semibold text-slate-950">Sensitive Answer Vault</h3>
-      <div className="mt-3 grid grid-cols-2 gap-3">
+    <section className="panel border-amber-200 bg-amber-50/40 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-slate-950">Sensitive Answer Vault</h3>
+          <p className="mt-1 text-sm leading-6 text-slate-700">Lock answers you are comfortable reusing. Editable answers are treated as needing care until confirmed.</p>
+        </div>
+        <Badge tone="amber" icon={ShieldAlert}>separate from ordinary facts</Badge>
+      </div>
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
         {sensitiveFields.map((field) => {
           const saved = answers.find((answer) => answer.key === field.key);
           const savedValue = textValue(saved?.value);
           const draftValue = drafts[field.key] ?? savedValue;
           return (
-            <div key={field.key} className="rounded-md border border-slate-200 p-3">
+            <div key={field.key} className="rounded-md border border-amber-200 bg-white p-3">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-semibold text-slate-800">{field.label}</p>
-                <span className={saved?.locked ? "text-emerald-700" : "text-amber-700"}>{saved?.locked ? <Lock size={15} /> : <Unlock size={15} />}</span>
+                <SensitiveBadge locked={saved?.locked} requiresReview={saved?.requiresReview} />
               </div>
               <textarea
                 aria-label={field.label}
@@ -229,14 +240,14 @@ function ClaimsPanel({
   return (
     <section className="panel p-4">
       <h3 className="text-base font-semibold text-slate-950">Structured Claims</h3>
-      <div className="mt-3 grid grid-cols-[1fr_1.4fr_1fr_180px_auto] gap-2">
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-[1fr_1.4fr_1fr_180px_auto]">
         <input className="field" placeholder="Category" value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })} />
         <input className="field" placeholder="Value" value={draft.value} onChange={(event) => setDraft({ ...draft, value: event.target.value })} />
         <input className="field" placeholder="Evidence IDs" value={draft.evidenceIds} onChange={(event) => setDraft({ ...draft, evidenceIds: event.target.value })} />
         <select className="field" value={draft.verificationStatus} onChange={(event) => setDraft({ ...draft, verificationStatus: event.target.value as VerificationStatus })}>{verificationStatuses.map((status) => <option key={status} value={status}>{status}</option>)}</select>
         <button className="button" type="button" disabled={!draft.category.trim() || !draft.value.trim()} onClick={() => { onSave({ category: draft.category, value: draft.value, evidenceIds: parseCsv(draft.evidenceIds), verificationStatus: draft.verificationStatus, locked: draft.locked }); setDraft({ category: "", value: "", evidenceIds: "", verificationStatus: "user_confirmed", locked: false }); }}><Plus size={15} /></button>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
         {claims.map((claim) => (
           <div key={claim.id} className="rounded-md border border-slate-200 p-3 text-sm">
             <div className="flex items-start justify-between gap-3">
@@ -247,9 +258,8 @@ function ClaimsPanel({
               <button className="icon-button" title="Delete claim" type="button" onClick={() => onDelete(claim.id)}><Trash2 size={15} /></button>
             </div>
             <div className="mt-2 flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
-              <span>{claim.verificationStatus}</span>
-              {claim.locked ? <span>locked</span> : null}
-              {claim.evidenceIds.length ? <span>{claim.evidenceIds.length} evidence links</span> : null}
+              <VerificationBadge status={claim.verificationStatus} locked={claim.locked} />
+              {claim.evidenceIds.length ? <Badge>{claim.evidenceIds.length} evidence links</Badge> : null}
             </div>
           </div>
         ))}
@@ -283,7 +293,7 @@ function StoryBank({
   return (
     <section className="panel p-4">
       <h3 className="text-base font-semibold text-slate-950">Story Bank</h3>
-      <div className="mt-3 grid grid-cols-3 gap-2">
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
         <input className="field" placeholder="Story title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
         <input className="field" placeholder="Tags" value={draft.tags} onChange={(event) => setDraft({ ...draft, tags: event.target.value })} />
         <input className="field" placeholder="Competencies" value={draft.competencies} onChange={(event) => setDraft({ ...draft, competencies: event.target.value })} />
@@ -294,12 +304,12 @@ function StoryBank({
         <input className="field" placeholder="Metrics" value={draft.metrics} onChange={(event) => setDraft({ ...draft, metrics: event.target.value })} />
         <input className="field" placeholder="Technologies" value={draft.technologies} onChange={(event) => setDraft({ ...draft, technologies: event.target.value })} />
       </div>
-      <div className="mt-2 flex items-center gap-3">
-        <input className="field max-w-lg" placeholder="Evidence IDs" value={draft.evidenceIds} onChange={(event) => setDraft({ ...draft, evidenceIds: event.target.value })} />
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <input className="field min-w-64 max-w-lg flex-1" placeholder="Evidence IDs" value={draft.evidenceIds} onChange={(event) => setDraft({ ...draft, evidenceIds: event.target.value })} />
         <label className="flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={draft.approved} onChange={(event) => setDraft({ ...draft, approved: event.target.checked })} />Approved</label>
         <button className="button" type="button" disabled={!draft.title.trim()} onClick={() => { onSave({ title: draft.title, tags: parseCsv(draft.tags), competencies: parseCsv(draft.competencies), situation: draft.situation, problem: draft.problem, actions: parseCsv(draft.actions), result: draft.result, metrics: parseCsv(draft.metrics), technologies: parseCsv(draft.technologies), evidenceIds: parseCsv(draft.evidenceIds), verificationStatus: "user_confirmed", approved: draft.approved }); setDraft({ title: "", tags: "", competencies: "", situation: "", problem: "", actions: "", result: "", metrics: "", technologies: "", evidenceIds: "", approved: false }); }}><Plus size={15} />Add story</button>
       </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
         {stories.map((story) => (
           <div key={story.id} className="rounded-md border border-slate-200 p-3">
             <div className="flex items-start justify-between gap-3">
@@ -334,7 +344,7 @@ function AnswerLibrary({
   return (
     <section className="panel p-4">
       <h3 className="text-base font-semibold text-slate-950">Answer Library</h3>
-      <div className="mt-3 grid grid-cols-[220px_1fr] gap-3">
+      <div className="mt-3 grid gap-3 lg:grid-cols-[220px_1fr]">
         <select className="field" value={draft.normalizedQuestionType} onChange={(event) => setDraft({ ...draft, normalizedQuestionType: event.target.value as ApplicationQuestionType })}>{longFormQuestionTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select>
         <input className="field" placeholder="Original question" value={draft.originalQuestion} onChange={(event) => setDraft({ ...draft, originalQuestion: event.target.value })} />
         <textarea className="field min-h-24" placeholder="Approved answer" value={draft.answer} onChange={(event) => setDraft({ ...draft, answer: event.target.value })} />
@@ -372,6 +382,22 @@ function AnswerLibrary({
 export function CandidateBrainPage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"overview" | "facts" | "preferences" | "sensitive" | "stories" | "answers">(
+    initialTab === "facts" || initialTab === "preferences" || initialTab === "sensitive" || initialTab === "stories" || initialTab === "answers"
+      ? initialTab
+      : "overview",
+  );
+  const [profileSearch, setProfileSearch] = useState("");
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "facts" || tab === "preferences" || tab === "sensitive" || tab === "stories" || tab === "answers") {
+      setActiveTab(tab);
+    } else if (!tab) {
+      setActiveTab("overview");
+    }
+  }, [searchParams]);
   const profile = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const items = useQuery({ queryKey: ["career-items"], queryFn: () => repository.listCareerItems() });
   const facts = useQuery({ queryKey: ["career-facts"], queryFn: () => repository.listCareerFacts() });
@@ -400,6 +426,16 @@ export function CandidateBrainPage() {
   const storyData = useMemo(() => stories.data ?? [], [stories.data]);
   const answerData = useMemo(() => answers.data ?? [], [answers.data]);
   const preferenceData = preferences.data ?? null;
+  const normalizedProfileSearch = profileSearch.trim().toLowerCase();
+  const filteredClaims = normalizedProfileSearch
+    ? claimData.filter((claim) => [claim.category, textValue(claim.value), claim.verificationStatus].join(" ").toLowerCase().includes(normalizedProfileSearch))
+    : claimData;
+  const filteredStories = normalizedProfileSearch
+    ? storyData.filter((story) => [story.title, story.problem, story.result, ...story.tags, ...story.competencies, ...story.technologies].join(" ").toLowerCase().includes(normalizedProfileSearch))
+    : storyData;
+  const filteredAnswers = normalizedProfileSearch
+    ? answerData.filter((answer) => [answer.originalQuestion, answer.answer, answer.normalizedQuestionType, ...answer.applicableRoleFamilies, ...answer.applicableSkills].join(" ").toLowerCase().includes(normalizedProfileSearch))
+    : answerData;
 
   const completeness = useMemo(() => {
     const complete = [
@@ -441,41 +477,132 @@ export function CandidateBrainPage() {
     preferences: preferenceData,
   });
 
+  const switchTab = (tab: typeof activeTab) => {
+    setActiveTab(tab);
+    setSearchParams(tab === "overview" ? {} : { tab });
+  };
+  const lockedSensitiveCount = sensitiveData.filter((answer) => answer.locked && textValue(answer.value)).length;
+  const verifiedClaims = claimData.filter((claim) => claim.verificationStatus === "verified" || claim.verificationStatus === "user_confirmed").length;
+
   return (
     <div>
-      <PageHeader eyebrow="Application memory" title="Candidate Brain" />
-      <div className="space-y-5 p-8">
-        <section className="panel p-5">
-          <div className="flex items-start justify-between gap-5">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-950">Profile completeness: {pct(completeness.score)}</h3>
-              <p className="mt-1 text-sm text-slate-600">Only verified, user-confirmed, or existing user-provided evidence is eligible for application answers by default.</p>
-            </div>
-            <div className="w-64 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
-              <p className="font-semibold text-slate-950">Answer engine preview</p>
-              {sampleAnswers.map((answer) => (
-                <p key={answer.fieldId} className={answer.requiresReview ? "mt-2 text-amber-700" : "mt-2 text-emerald-700"}>{answer.normalizedQuestionType}: {answer.answerSource}</p>
-              ))}
-            </div>
+      <PageHeader
+        eyebrow="Application memory"
+        title="Candidate Brain"
+        description="Manage reusable facts, preferences, sensitive answers, stories, and approved responses without mixing review-critical data into ordinary profile edits."
+        meta={
+          <>
+            <Badge tone="emerald" icon={ShieldCheck}>{verifiedClaims} verified claims</Badge>
+            <Badge tone={lockedSensitiveCount ? "emerald" : "amber"} icon={Lock}>{lockedSensitiveCount} locked sensitive answers</Badge>
+            <Badge tone={completeness.needs.length ? "amber" : "emerald"}>{pct(completeness.score)} complete</Badge>
+          </>
+        }
+      />
+      <div className="page-body space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Tabs
+            value={activeTab}
+            onChange={switchTab}
+            tabs={[
+              { id: "overview", label: "Overview" },
+              { id: "facts", label: "Facts", count: claimData.length },
+              { id: "preferences", label: "Preferences" },
+              { id: "sensitive", label: "Sensitive answers", count: sensitiveData.length },
+              { id: "stories", label: "Stories", count: storyData.length },
+              { id: "answers", label: "Approved answers", count: answerData.length },
+            ]}
+          />
+          <div className="w-full sm:w-80">
+            <SearchInput value={profileSearch} onChange={setProfileSearch} placeholder="Search Candidate Brain" />
           </div>
-          <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="font-semibold text-emerald-700">Complete</p>
-              {completeness.complete.map((item) => <p key={item} className="mt-1 text-slate-700">{item}</p>)}
-            </div>
-            <div>
-              <p className="font-semibold text-amber-700">Needs attention</p>
-              {completeness.needs.map((item) => <p key={item} className="mt-1 text-slate-700">{item}</p>)}
-              {!completeness.needs.length ? <p className="mt-1 text-slate-700">No obvious gaps.</p> : null}
-            </div>
-          </div>
-        </section>
+        </div>
 
-        <PreferencesPanel preferences={preferenceData} onSave={(next) => savePreferences.mutate(next)} />
-        <SensitiveVault answers={sensitiveData} onSave={(answer) => saveSensitive.mutate(answer)} />
-        <ClaimsPanel claims={claimData} onSave={(claim) => saveClaim.mutate(claim)} onDelete={(id) => deleteClaim.mutate(id)} />
-        <StoryBank stories={storyData} onSave={(story) => saveStory.mutate(story)} onDelete={(id) => deleteStory.mutate(id)} />
-        <AnswerLibrary answers={answerData} onSave={(answer) => saveAnswer.mutate(answer)} onDelete={(id) => deleteAnswer.mutate(id)} />
+        {activeTab === "overview" ? (
+          <>
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <StatCard label="Profile completeness" value={pct(completeness.score)} detail="Contact, evidence, preferences, and reusable stories" icon={ShieldCheck} tone={completeness.needs.length ? "amber" : "emerald"} />
+              <StatCard label="Career items" value={itemData.length} detail={`${factData.length} source-backed facts`} icon={FileText} />
+              <StatCard label="Sensitive readiness" value={`${lockedSensitiveCount}/${sensitiveFields.length}`} detail="Locked answers are immutable until unlocked" icon={Lock} tone={lockedSensitiveCount ? "emerald" : "amber"} />
+              <StatCard label="Reusable memory" value={storyData.filter((story) => story.approved).length + answerData.filter((answer) => !answer.doNotReuse).length} detail="Approved stories and answers" icon={BookOpenCheck} tone="blue" />
+            </div>
+
+            <PageSection
+              title="Readiness summary"
+              description="Only verified, confirmed, or reviewed evidence should feed application answers. Missing sensitive answers stay visible until you decide what can be reused."
+              actions={<Link className="button" to="/career-memory">Open evidence database</Link>}
+            >
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="panel-muted p-4">
+                    <p className="font-semibold text-emerald-700">Complete</p>
+                    <div className="mt-2 space-y-2 text-sm text-slate-700">
+                      {completeness.complete.map((item) => <p key={item}>{item}</p>)}
+                      {!completeness.complete.length ? <p>No profile areas complete yet.</p> : null}
+                    </div>
+                  </div>
+                  <div className="panel-muted p-4">
+                    <p className="font-semibold text-amber-700">Needs attention</p>
+                    <div className="mt-2 space-y-2 text-sm text-slate-700">
+                      {completeness.needs.map((item) => <p key={item}>{item}</p>)}
+                      {!completeness.needs.length ? <p>No obvious gaps.</p> : null}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
+                  <p className="font-semibold text-slate-950">Answer engine preview</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">Shows the source type CareerCompiler would choose for common application fields.</p>
+                  <div className="mt-3 space-y-2">
+                    {sampleAnswers.map((answer) => (
+                      <div key={answer.fieldId} className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                        <span className="truncate text-slate-700">{answer.normalizedQuestionType.replaceAll("_", " ")}</span>
+                        <Badge tone={answer.requiresReview ? "amber" : "emerald"}>{answer.answerSource.replaceAll("_", " ")}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </PageSection>
+
+            <PageSection title="Next profile actions">
+              <ProgressChecklist
+                items={[
+                  { label: "Contact information complete", detail: "Required before export.", complete: Boolean(profileData?.fullName && profileData.email && profileData.phone), warning: true },
+                  { label: "Sensitive answers reviewed", detail: "Authorization and sponsorship should be explicit.", complete: lockedSensitiveCount >= 2, warning: true },
+                  { label: "Leadership story reusable", detail: "Helpful for behavioral and application answers.", complete: storyData.some((story) => story.approved), warning: true },
+                  { label: "Target role preferences set", complete: Boolean(preferenceData?.targetRoles.length), warning: true },
+                ]}
+              />
+            </PageSection>
+
+            <SensitiveVault answers={sensitiveData} onSave={(answer) => saveSensitive.mutate(answer)} />
+          </>
+        ) : null}
+
+        {activeTab === "preferences" ? (
+          <PreferencesPanel preferences={preferenceData} onSave={(next) => savePreferences.mutate(next)} />
+        ) : null}
+
+        {activeTab === "sensitive" ? (
+          <>
+            <AlertBanner tone="amber" title="Sensitive answers require deliberate edits">
+              Unlocking lets you change the value. Existing applications are not changed automatically.
+            </AlertBanner>
+            <SensitiveVault answers={sensitiveData} onSave={(answer) => saveSensitive.mutate(answer)} />
+          </>
+        ) : null}
+
+        {activeTab === "facts" ? (
+          <ClaimsPanel claims={filteredClaims} onSave={(claim) => saveClaim.mutate(claim)} onDelete={(id) => deleteClaim.mutate(id)} />
+        ) : null}
+
+        {activeTab === "stories" ? (
+          <StoryBank stories={filteredStories} onSave={(story) => saveStory.mutate(story)} onDelete={(id) => deleteStory.mutate(id)} />
+        ) : null}
+
+        {activeTab === "answers" ? (
+          <AnswerLibrary answers={filteredAnswers} onSave={(answer) => saveAnswer.mutate(answer)} onDelete={(id) => deleteAnswer.mutate(id)} />
+        ) : null}
+
         {!itemData.length ? <EmptyState title="No career evidence yet" body="Add career items and facts in the Evidence Database so application answers have reviewed source material." /> : null}
       </div>
     </div>

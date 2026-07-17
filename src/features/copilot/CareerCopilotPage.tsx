@@ -4,6 +4,7 @@ import { Archive, Check, MessageSquarePlus, Send, Trash2, X } from "lucide-react
 import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
+import { Badge, PageSection } from "../../components/ui";
 import { sendCareerCopilotMessage } from "../../lib/copilot/careerCopilot";
 import { useRepository } from "../../lib/database/repositoryContext";
 import type {
@@ -168,9 +169,21 @@ export function CareerCopilotPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Cited local assistant" title="Career Copilot" />
-      <div className="grid h-[calc(100vh-92px)] grid-cols-[280px_minmax(0,1fr)_320px] overflow-hidden">
-        <aside className="border-r border-slate-200 bg-white p-4">
+      <PageHeader
+        eyebrow="Cited local assistant"
+        title="Career Copilot"
+        description="Ask questions against local jobs, resumes, applications, and career evidence. Write actions stay pending until you confirm them."
+        meta={
+          <>
+            <Badge tone="blue">{searchDiagnosticsQuery.data?.documentCount ?? 0} indexed records</Badge>
+            <Badge tone={searchDiagnosticsQuery.data?.fts5Available ? "emerald" : "amber"}>FTS5 {searchDiagnosticsQuery.data?.fts5Available ? "available" : "fallback"}</Badge>
+            <Badge>Semantic {settingsQuery.data?.semanticSearchMode ?? "disabled"}</Badge>
+          </>
+        }
+      />
+      <div className="page-body">
+      <div className="grid min-h-[calc(100vh-190px)] gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+        <aside className="panel p-4">
           <div className="flex items-center gap-2">
             <button className="button button-primary w-full" type="button" onClick={() => createThread.mutate()}>
               <MessageSquarePlus size={15} />
@@ -200,12 +213,12 @@ export function CareerCopilotPage() {
           </div>
         </aside>
 
-        <main className="flex min-w-0 flex-col bg-[#f6f7f9]">
+        <section className="panel flex min-h-[640px] min-w-0 flex-col overflow-hidden">
           <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-5 py-3">
             <div className="mr-auto min-w-0">
               <p className="truncate text-sm font-semibold text-slate-950">{selectedThread?.title ?? "Career Copilot"}</p>
               <p className="text-xs text-slate-500">
-                Search docs {searchDiagnosticsQuery.data?.documentCount ?? 0} | FTS5 {searchDiagnosticsQuery.data?.fts5Available ? "on" : "fallback"} | Semantic {settingsQuery.data?.semanticSearchMode ?? "disabled"}
+                Answers cite local records. Advice that is not record-backed is labeled in the response.
               </p>
             </div>
             {selectedThread ? (
@@ -227,7 +240,18 @@ export function CareerCopilotPage() {
             {messages.length ? (
               messages.map((message) => <MessageBubble key={message.id} message={message} />)
             ) : (
-              <EmptyState title="Ask about your job search" body="Career Copilot answers from saved local records and cites the records it used." />
+              <div className="space-y-4">
+                <EmptyState title="Ask about your job search" body="Career Copilot answers from saved local records and cites the records it used." />
+                <PageSection title="Useful starters" description="Choose a task to begin with local context already scoped.">
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {starterQuestions.map((question) => (
+                      <button key={question} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-800" type="button" onClick={() => submit(question)}>
+                        {question}
+                      </button>
+                    ))}
+                  </div>
+                </PageSection>
+              </div>
             )}
           </div>
 
@@ -257,9 +281,9 @@ export function CareerCopilotPage() {
               </button>
             </div>
           </div>
-        </main>
+        </section>
 
-        <aside className="space-y-4 overflow-auto border-l border-slate-200 bg-white p-4">
+        <aside className="panel space-y-4 overflow-auto p-4">
           <section>
             <h3 className="text-sm font-semibold text-slate-950">Pending actions</h3>
             <div className="mt-3 space-y-3">
@@ -299,6 +323,7 @@ export function CareerCopilotPage() {
             </section>
           ) : null}
         </aside>
+      </div>
       </div>
     </div>
   );

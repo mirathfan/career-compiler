@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { InlineError, LoadingState } from "../../components/States";
+import { AlertBanner, Badge, ConfidenceBadge, PageSection, ProgressChecklist, StatusBadge } from "../../components/ui";
 import { createAIProvider } from "../../lib/ai/providerFactory";
 import {
   assertCareerImportReadyToSave,
@@ -23,7 +24,6 @@ import {
   parseCareerImportPackageText,
   prepareCareerImportProposal,
   serializeCareerImportPackage,
-  summarizeImportDecisions,
 } from "../../lib/import/careerIntake";
 import type {
   CareerFact,
@@ -85,19 +85,44 @@ function allChanges(proposal: CareerImportProposal) {
   ];
 }
 
-function statusClass(status: ProposalChange["validationStatus"]) {
-  if (status === "invalid") return "border-red-200 bg-red-50 text-red-800";
-  if (status === "conflict") return "border-amber-200 bg-amber-50 text-amber-800";
-  if (status === "warning") return "border-yellow-200 bg-yellow-50 text-yellow-800";
-  if (status === "valid") return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
 function decisionClass(decision: CareerImportUserDecision) {
   if (decision === "approved" || decision === "edited") return "text-emerald-700";
   if (decision === "merge") return "text-blue-700";
   if (decision === "rejected") return "text-red-700";
   return "text-slate-500";
+}
+
+function labelize(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function ProposalValue({ value }: { value: unknown }) {
+  if (value == null || value === "") return <p className="text-slate-500">No existing value</p>;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return <p className="break-words text-slate-700">{String(value)}</p>;
+  }
+  if (Array.isArray(value)) {
+    return value.length ? (
+      <div className="flex flex-wrap gap-1.5">
+        {value.map((item, index) => <Badge key={`${String(item)}-${index}`}>{String(item)}</Badge>)}
+      </div>
+    ) : <p className="text-slate-500">None</p>;
+  }
+  if (typeof value === "object") {
+    return (
+      <dl className="space-y-2">
+        {Object.entries(value as Record<string, unknown>).filter(([key]) => !["id", "createdAt", "updatedAt"].includes(key)).map(([key, entry]) => (
+          <div key={key}>
+            <dt className="text-[11px] font-bold uppercase tracking-[0.1em] text-slate-500">{labelize(key)}</dt>
+            <dd className="mt-0.5 break-words text-slate-700">
+              {Array.isArray(entry) ? entry.join(", ") || "None" : typeof entry === "object" && entry !== null ? JSON.stringify(entry) : String(entry ?? "") || "None"}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return <p>{String(value)}</p>;
 }
 
 export function SmartCareerIntake({
@@ -171,7 +196,6 @@ export function SmartCareerIntake({
   const settings = settingsQuery.data;
   if (!settings) return <LoadingState label="Loading intake..." />;
   const latestImport = (importsQuery.data ?? []).find((record) => !record.undoneAt);
-  const summary = proposal ? summarizeImportDecisions(proposal) : null;
   const readyToSave = proposal
     ? (() => {
         try {
@@ -313,17 +337,21 @@ export function SmartCareerIntake({
     filter === "all" ||
     (filter === "warnings" && (change.validationStatus === "warning" || change.validationStatus === "invalid")) ||
     (filter === "conflicts" && change.validationStatus === "conflict");
+  const proposalChanges = proposal ? allChanges(proposal) : [];
+  const proposalBreakdown = {
+    safe: proposalChanges.filter((change) => change.validationStatus === "valid" && !change.duplicateCandidates.length).length,
+    needsConfirmation: proposalChanges.filter((change) => change.validationStatus === "warning").length,
+    conflicts: proposalChanges.filter((change) => change.validationStatus === "conflict" || change.validationStatus === "invalid").length,
+    duplicates: proposalChanges.filter((change) => change.duplicateCandidates.length).length,
+    skipped: proposalChanges.filter((change) => change.userDecision === "rejected").length,
+  };
 
   return (
-    <div className="panel p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h3 className="text-lg font-semibold text-slate-950">Smart Career Intake</h3>
-          <p className="mt-1 text-sm text-slate-600">
-            Extract candidate changes, review conflicts, then save approved records transactionally.
-          </p>
-        </div>
-        <div className="flex gap-2">
+    <PageSection
+      title="Smart Career Intake"
+      description="Paste or import career information, review proposed records by category, resolve conflicts, and save only approved changes."
+      actions={
+        <>
           <button className="button" type="button" onClick={exportPackage}>
             <Package size={15} aria-hidden="true" />
             Export package
@@ -339,10 +367,33 @@ export function SmartCareerIntake({
             <RotateCcw size={15} aria-hidden="true" />
             Undo import
           </button>
+        </>
+      }
+    >
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div>
+          <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+            {["Paste or upload", "Extract proposals", "Review categories", "Resolve issues", "Save approved"].map((step, index) => (
+              <Badge key={step} tone={proposal ? (index < 2 ? "emerald" : "blue") : index === 0 ? "blue" : "slate"}>
+                {index + 1}. {step}
+              </Badge>
+            ))}
+          </div>
+          <AlertBanner tone="blue" title="Nothing is saved during extraction">
+            Proposed records stay in this review panel until you approve them and choose Save approved changes.
+          </AlertBanner>
         </div>
+        <ProgressChecklist
+          items={[
+            { label: "Input collected", complete: Boolean(sourceText.trim()), detail: sourceTitle || "Add a source title to make review easier." },
+            { label: "Proposal generated", complete: Boolean(proposal), detail: proposal ? `${proposalChanges.length} proposed changes` : "Run extraction to preview changes.", warning: true },
+            { label: "Conflicts resolved", complete: Boolean(proposal && proposalBreakdown.conflicts === 0), detail: proposal ? `${proposalBreakdown.conflicts} conflicts or invalid changes` : "Review after extraction.", warning: true },
+            { label: "Ready to save", complete: readyToSave, detail: readyToSave ? "Only approved changes will be saved." : "Pending, invalid, or conflicting proposals block saving.", warning: true },
+          ]}
+        />
       </div>
 
-      <div className="mt-4 grid grid-cols-[220px_1fr] gap-3">
+      <div className="mt-5 grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
         <select className="field" value={mode} onChange={(event) => setMode(event.target.value as CareerImportSourceType)}>
           {modes.map((item) => (
             <option key={item.id} value={item.id}>
@@ -401,12 +452,21 @@ export function SmartCareerIntake({
 
       {proposal ? (
         <div className="mt-5 border-t border-slate-200 pt-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-slate-600">
-              <strong className="text-slate-950">{summary?.total ?? 0}</strong> proposals | {summary?.approved ?? 0} approved |{" "}
-              {summary?.rejected ?? 0} rejected | {summary?.conflicts ?? 0} conflicts
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div>
+              <h4 className="text-base font-semibold text-slate-950">Review import proposal</h4>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                Safe changes can be bulk approved. Conflicts, duplicates, and sensitive-looking values should be reviewed individually.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Badge tone="emerald">{proposalBreakdown.safe} safe to import</Badge>
+                <Badge tone="amber">{proposalBreakdown.needsConfirmation} need confirmation</Badge>
+                <Badge tone="red">{proposalBreakdown.conflicts} conflicts</Badge>
+                <Badge tone="blue">{proposalBreakdown.duplicates} possible duplicates</Badge>
+                <Badge>{proposalBreakdown.skipped} skipped</Badge>
+              </div>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-2 xl:justify-end">
               <select className="field w-44" value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}>
                 <option value="all">All proposals</option>
                 <option value="warnings">Warnings/errors</option>
@@ -450,18 +510,16 @@ export function SmartCareerIntake({
                 ) : null}
                 <div className="mt-2 space-y-3">
                   {changes.filter(visible).map((change) => (
-                    <div key={`${label}-${change.proposalId}`} className="rounded-md border border-slate-200 bg-white p-3">
+                    <div key={`${label}-${change.proposalId}`} className="rounded-md border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-semibold text-slate-950">{change.targetType.replaceAll("_", " ")}</span>
-                            <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${statusClass(change.validationStatus)}`}>
-                              {change.validationStatus}
-                            </span>
+                            <span className="font-semibold text-slate-950">{labelize(change.targetType)}</span>
+                            <StatusBadge status={change.validationStatus} />
                             <span className={`text-xs font-semibold ${decisionClass(change.userDecision)}`}>
-                              {change.userDecision}
+                              {labelize(change.userDecision)}
                             </span>
-                            <span className="text-xs text-slate-500">{Math.round(change.confidence * 100)}%</span>
+                            <ConfidenceBadge value={change.confidence} />
                           </div>
                           <p className="mt-1 text-sm text-slate-600">{change.reason}</p>
                         </div>
@@ -482,14 +540,18 @@ export function SmartCareerIntake({
                           </button>
                         </div>
                       </div>
-                      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                      <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
                         <div className="rounded border border-slate-200 bg-slate-50 p-2">
                           <p className="font-semibold text-slate-700">Proposed value</p>
-                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-slate-600">{stringify(change.proposedValue)}</pre>
+                          <div className="mt-2 max-h-56 overflow-auto">
+                            <ProposalValue value={change.proposedValue} />
+                          </div>
                         </div>
                         <div className="rounded border border-slate-200 bg-slate-50 p-2">
                           <p className="font-semibold text-slate-700">Existing value</p>
-                          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-slate-600">{stringify(change.existingValue)}</pre>
+                          <div className="mt-2 max-h-56 overflow-auto">
+                            <ProposalValue value={change.existingValue} />
+                          </div>
                         </div>
                       </div>
                       <p className="mt-3 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
@@ -545,6 +607,6 @@ export function SmartCareerIntake({
           ) : null}
         </div>
       ) : null}
-    </div>
+    </PageSection>
   );
 }

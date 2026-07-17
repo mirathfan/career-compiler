@@ -43,6 +43,9 @@ IPC/
 tmp/
 temp/
 
+# Local UI QA captures may contain seeded profile details.
+docs/ui-ux-overhaul/**/*.png
+
 # Signing and certificate material
 *.p12
 *.mobileprovision

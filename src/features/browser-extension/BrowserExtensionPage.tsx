@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
+import { AlertBanner, Badge, PageSection, ProgressChecklist } from "../../components/ui";
 
 interface DiagnosticEvent {
   atMs: number;
@@ -119,8 +120,19 @@ export function BrowserExtensionPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Autofill bridge" title="Browser Extension" />
-      <div className="space-y-5 p-8">
+      <PageHeader
+        eyebrow="Autofill bridge"
+        title="Browser Extension"
+        description="Pair the Chrome extension with this local desktop app, verify each setup step, and keep final submission manual."
+        meta={
+          <>
+            <Badge tone={runtimeAvailable ? "emerald" : "amber"}>{runtimeAvailable ? "desktop runtime" : "browser preview"}</Badge>
+            <Badge tone={extensionIdValid ? "emerald" : "amber"}>{extensionIdValid ? "extension ID valid" : "extension ID needed"}</Badge>
+            <Badge tone={status?.pingOk ? "emerald" : "amber"}>{status?.pingOk ? "connected" : "not connected"}</Badge>
+          </>
+        }
+      />
+      <div className="page-body space-y-5">
         <section className={`rounded-md border p-5 ${statusTone(status)}`}>
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -135,22 +147,30 @@ export function BrowserExtensionPage() {
               Refresh
             </button>
           </div>
-          <div className="mt-4 grid grid-cols-5 gap-2 text-sm">
-            {statusItems.map((item) => (
-              <div key={item.label} className="rounded-md border border-white/70 bg-white/70 px-3 py-2">
-                <p className="text-xs font-semibold uppercase text-slate-500">{item.label}</p>
-                <p className={item.ok ? "font-semibold text-emerald-700" : "font-semibold text-slate-600"}>{item.ok ? "Verified" : "Needs setup"}</p>
-              </div>
-            ))}
+          <div className="mt-4">
+            <ProgressChecklist
+              items={statusItems.map((item) => ({
+                label: item.label,
+                detail: item.ok ? "Verified by CareerCompiler." : "Complete or retry this step.",
+                complete: item.ok,
+                warning: true,
+              }))}
+            />
           </div>
         </section>
 
-        <section className="grid grid-cols-[1.2fr_1fr] gap-5">
-          <div className="panel p-5">
+        <section className="grid gap-5 xl:grid-cols-[1.2fr_1fr]">
+          <PageSection
+            title="Guided setup"
+            description="Complete these steps in order. Success is based on verification state, not just clicking a button."
+          >
             <div className="flex items-center gap-2">
               <Plug size={18} aria-hidden="true" />
-              <h3 className="font-semibold text-slate-950">Guided setup</h3>
+              <h4 className="font-semibold text-slate-950">Connect Chrome to CareerCompiler</h4>
             </div>
+            <AlertBanner tone="blue" title="Autofill is assistive only">
+              The extension can prepare fields for review, but you remain responsible for final submission.
+            </AlertBanner>
             <div className="mt-4 space-y-3">
               <label className="block text-sm font-semibold text-slate-700">
                 Chrome extension ID
@@ -250,9 +270,24 @@ export function BrowserExtensionPage() {
                 </div>
               ) : null}
             </div>
-          </div>
+          </PageSection>
 
-          <div className="panel p-5">
+          <PageSection title="Setup stages" description="Use this as the recovery path when pairing fails.">
+            <ProgressChecklist
+              items={[
+                { label: "Install or load extension", complete: extensionIdValid, detail: "Load the built extension in Chrome and copy its ID.", warning: true },
+                { label: "Register native host", complete: Boolean(status?.manifestExists && status.manifestValid), detail: "Creates Chrome native messaging manifest.", warning: true },
+                { label: "Verify host", complete: Boolean(status?.hostBinaryExists && status.hostBinaryExecutable), detail: "Confirms the local bridge executable exists.", warning: true },
+                { label: "Pair extension", complete: Boolean(status?.pairedExtensionId), detail: "Uses a short-lived pairing code.", warning: true },
+                { label: "Test connection", complete: Boolean(status?.pingOk), detail: status?.pingError || "Ping confirms the extension can reach the desktop app.", warning: true },
+              ]}
+            />
+          </PageSection>
+
+          <details className="panel p-5 xl:col-span-2">
+            <summary className="cursor-pointer font-semibold text-slate-950">Advanced diagnostics and paths</summary>
+            <div className="mt-4 grid gap-5 lg:grid-cols-2">
+          <div>
             <div className="flex items-center gap-2">
               <ShieldCheck size={18} aria-hidden="true" />
               <h3 className="font-semibold text-slate-950">Verified paths</h3>
@@ -276,10 +311,7 @@ export function BrowserExtensionPage() {
               </div>
             </dl>
           </div>
-        </section>
-
-        <section className="grid grid-cols-[1fr_1fr] gap-5">
-          <div className="panel p-5">
+          <div>
             <div className="flex items-center gap-2">
               <CheckCircle2 size={18} aria-hidden="true" />
               <h3 className="font-semibold text-slate-950">Autofill test workflow</h3>
@@ -293,8 +325,7 @@ export function BrowserExtensionPage() {
               <li>Scan, fill, review highlights, save edits, and submit manually.</li>
             </ol>
           </div>
-
-          <div className="panel p-5">
+          <div className="lg:col-span-2">
             <div className="flex items-center gap-2">
               <TestTube2 size={18} aria-hidden="true" />
               <h3 className="font-semibold text-slate-950">Connection diagnostics</h3>
@@ -309,6 +340,8 @@ export function BrowserExtensionPage() {
               {!status?.diagnostics.length ? <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">No diagnostics yet.</p> : null}
             </div>
           </div>
+            </div>
+          </details>
         </section>
       </div>
     </div>
