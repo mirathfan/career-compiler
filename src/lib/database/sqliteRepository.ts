@@ -576,7 +576,10 @@ export class SqliteRepository implements AppRepository {
       });
     }
     try {
-      await this.db.execute("BEGIN IMMEDIATE");
+      // The Tauri SQL plugin executes through a connection pool and does not expose
+      // a transaction API. Manual BEGIN/COMMIT statements can run on different
+      // connections and lock fresh startup migrations, so migrations run
+      // statement-by-statement after the existing native backup step.
       for (const migration of pending) {
         for (const statement of splitStatements(migration.sql)) {
           await this.db.execute(statement);
@@ -586,9 +589,7 @@ export class SqliteRepository implements AppRepository {
           [migration.id, migration.name, nowIso()],
         );
       }
-      await this.db.execute("COMMIT");
     } catch (caught) {
-      await this.db.execute("ROLLBACK").catch(() => undefined);
       const message = caught instanceof Error ? caught.message : String(caught);
       try {
         await this.db.execute(`CREATE TABLE IF NOT EXISTS migration_events (
@@ -609,7 +610,7 @@ export class SqliteRepository implements AppRepository {
         // The original migration error is more useful if even diagnostics cannot be recorded.
       }
       throw new Error(
-        `migration_failed|Database migration failed without replacing existing data. Backup: ${backupPath || "not required"}. ${message}`,
+        `migration_failed|Database migration failed after the pre-migration backup step. Backup: ${backupPath || "not required"}. ${message}`,
       );
     }
     if (pending.length > 0) {
