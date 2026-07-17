@@ -190,12 +190,7 @@ const changeBaseJsonSchema = {
   duplicateCandidates: jsonStringArray,
   conflictDetails: jsonStringArray,
   userDecision: { type: "string", enum: ["pending", "approved", "edited", "merge", "rejected"] },
-  existingValue: {
-    anyOf: [
-      { type: "object", additionalProperties: true },
-      { type: "null" },
-    ],
-  },
+  existingValue: { type: "null" },
 } as const;
 
 function changeSchema(target: string, proposedValue: unknown) {

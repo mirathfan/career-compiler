@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CareerImportProposal } from "./careerImport";
+import { CareerImportProposal, careerImportProposalJsonSchema } from "./careerImport";
 import { JobAnalysisSchema, jobAnalysisJsonSchema } from "./jobAnalysis";
 import { ResumePlanSchema, TailoredResumeSchema } from "./resume";
 
@@ -151,5 +151,11 @@ describe("zod schemas", () => {
         ],
       }),
     ).toThrow();
+  });
+
+  it("keeps the career import provider schema strict-output compatible", () => {
+    const careerItemChange = careerImportProposalJsonSchema.properties.careerItemChanges.items;
+    expect(careerItemChange.properties.existingValue).toEqual({ type: "null" });
+    expect(JSON.stringify(careerImportProposalJsonSchema)).not.toContain('"additionalProperties":true');
   });
 });

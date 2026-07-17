@@ -65,6 +65,7 @@ Rules:
 - Do not mark a claim as verified merely because it appears in pasted text.
 - Default imported claims to user_provided or needs_review.
 - Use empty strings for unknown fields and empty arrays when no tags are supported.
+- Set existingValue to null; local validation fills existing-record context.
 - Leave validationStatus as pending and userDecision as pending; local validation and the user decide what can be saved.
 - Return only the structured response required by the schema.`;
 
