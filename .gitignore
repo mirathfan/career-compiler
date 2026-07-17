@@ -1,5 +1,34 @@
-# Logs
-logs
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+target/
+src-tauri/target/
+src-tauri/gen/
+.vite/
+coverage/
+playwright-report/
+test-results/
+apps/careercompiler-extension/dist/
+output/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Local databases and backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+local-backups/
+backups/
+
+# Logs and diagnostics
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -7,16 +36,24 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# Runtime artifacts
+AuthorizedResumeExports/
+NativeHost/
+IPC/
 tmp/
+temp/
 
-# Editor directories and files
+# Signing and certificate material
+*.p12
+*.mobileprovision
+*.cer
+*.key
+*.pem
+
+# Editor and OS files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
