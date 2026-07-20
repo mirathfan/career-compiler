@@ -7,6 +7,7 @@ import {
   CheckCheck,
   FileJson,
   Filter,
+  LoaderCircle,
   Merge,
   Package,
   RotateCcw,
@@ -92,8 +93,46 @@ function decisionClass(decision: CareerImportUserDecision) {
   return "text-slate-500";
 }
 
+function decisionButtonClass(change: ProposalChange, decision: CareerImportUserDecision, danger = false) {
+  if (change.userDecision === decision) {
+    return danger ? "button button-danger" : "button button-primary";
+  }
+  return danger ? "button button-danger" : "button";
+}
+
 function labelize(value: string) {
   return value.replaceAll("_", " ");
+}
+
+function changeLabel(change: ProposalChange) {
+  const value = change.proposedValue as Record<string, unknown>;
+  return String(
+    value.title ??
+      value.name ??
+      value.statement ??
+      value.fullName ??
+      value.relationshipType ??
+      labelize(change.targetType),
+  );
+}
+
+function isSaveableWithoutMerge(change: ProposalChange) {
+  return (
+    (change.validationStatus === "valid" || change.validationStatus === "warning") &&
+    change.duplicateCandidates.length === 0
+  );
+}
+
+function isBlockedChange(change: ProposalChange) {
+  return change.validationStatus === "invalid" || change.validationStatus === "conflict";
+}
+
+function isMergeableDuplicate(change: ProposalChange) {
+  return change.duplicateCandidates.length > 0 && change.validationStatus !== "invalid";
+}
+
+function isPendingChange(change: ProposalChange) {
+  return change.userDecision === "pending";
 }
 
 function ProposalValue({ value }: { value: unknown }) {
@@ -149,6 +188,7 @@ export function SmartCareerIntake({
   const [filter, setFilter] = useState<"all" | "warnings" | "conflicts">("all");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
+  const [isExtracting, setIsExtracting] = useState(false);
   const profileQuery = useQuery({ queryKey: ["profile"], queryFn: () => repository.getProfile() });
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => repository.getSettings() });
   const importsQuery = useQuery({
@@ -196,6 +236,8 @@ export function SmartCareerIntake({
   const settings = settingsQuery.data;
   if (!settings) return <LoadingState label="Loading intake..." />;
   const latestImport = (importsQuery.data ?? []).find((record) => !record.undoneAt);
+  const usesOpenAIExtraction =
+    settings.aiProvider === "openai" && mode !== "structured_package" && mode !== "guided_interview";
   const readyToSave = proposal
     ? (() => {
         try {
@@ -208,16 +250,20 @@ export function SmartCareerIntake({
     : false;
 
   const extract = async () => {
+    if (isExtracting) return;
     setError("");
     setStatus("");
+    setIsExtracting(true);
     try {
       if (mode === "structured_package") {
+        setStatus("Parsing structured package...");
         const parsed = parseCareerImportPackageText(sourceText);
         setProposal(prepareCareerImportProposal(parsed.proposal, context));
         setStatus("Package parsed and ready for review.");
         return;
       }
       if (mode === "guided_interview") {
+        setStatus("Generating local interview proposal...");
         const draft = createDeterministicCareerImportProposal({
           text: sourceText,
           sourceType: "guided_interview",
@@ -228,6 +274,11 @@ export function SmartCareerIntake({
         setStatus("Interview answers converted into proposals.");
         return;
       }
+      setStatus(
+        usesOpenAIExtraction
+          ? "OpenAI extraction is running. This can take a few minutes for long Candidate Brain prompts."
+          : "Generating local proposal...",
+      );
       const provider = createAIProvider(settings.aiProvider);
       const sourceType = mode === "paste_anything" ? classifyCareerImportInput(sourceText) : mode;
       const result = await provider.extractCareerInformation({
@@ -241,35 +292,58 @@ export function SmartCareerIntake({
       setStatus(`${settings.aiProvider === "openai" ? "OpenAI" : "Mock"} extraction is ready for review.`);
     } catch (caught) {
       setError(compactError(caught));
+      setStatus("Extraction did not complete. Review the error and try again.");
+    } finally {
+      setIsExtracting(false);
     }
   };
 
   const setDecision = (proposalId: string, decision: CareerImportUserDecision) => {
     if (!proposal) return;
     setProposal(updateChange(proposal, proposalId, (change) => ({ ...change, userDecision: decision })));
+    const change = allChanges(proposal).find((item) => item.proposalId === proposalId);
+    setStatus(`${change ? changeLabel(change) : "Proposal"} marked ${labelize(decision)}.`);
   };
 
-  const bulkApproveSafe = () => {
+  const applyBulkDecision = (
+    label: string,
+    decision: CareerImportUserDecision,
+    predicate: (change: ProposalChange) => boolean,
+  ) => {
     if (!proposal) return;
-    const next = allChanges(proposal).reduce(
-      (current, change) =>
-        change.validationStatus === "valid" || change.validationStatus === "warning"
-          ? updateChange(current, change.proposalId, (candidate) => ({ ...candidate, userDecision: "approved" }))
-          : current,
-      proposal,
-    );
+    let changed = 0;
+    const next = allChanges(proposal).reduce((current, change) => {
+      if (!predicate(change)) return current;
+      changed += 1;
+      return updateChange(current, change.proposalId, (candidate) => ({ ...candidate, userDecision: decision }));
+    }, proposal);
     setProposal(next);
+    setStatus(`${label}: ${changed} proposal${changed === 1 ? "" : "s"} marked ${labelize(decision)}.`);
   };
 
-  const rejectAll = () => {
-    if (!proposal) return;
-    setProposal(
-      allChanges(proposal).reduce(
-        (current, change) =>
-          updateChange(current, change.proposalId, (candidate) => ({ ...candidate, userDecision: "rejected" })),
-        proposal,
-      ),
+  const bulkApproveSaveable = () => {
+    applyBulkDecision("Approve saveable", "approved", (change) => isPendingChange(change) && isSaveableWithoutMerge(change));
+  };
+
+  const bulkMergeDuplicates = () => {
+    applyBulkDecision("Merge duplicates", "merge", (change) => isPendingChange(change) && isMergeableDuplicate(change));
+  };
+
+  const bulkRejectDuplicates = () => {
+    applyBulkDecision(
+      "Reject duplicates",
+      "rejected",
+      (change) => isPendingChange(change) && change.duplicateCandidates.length > 0,
     );
+  };
+
+  const bulkRejectBlocked = () => {
+    applyBulkDecision("Reject invalid/conflicts", "rejected", (change) => isPendingChange(change) && isBlockedChange(change));
+  };
+
+  const rejectPending = () => {
+    if (!proposal) return;
+    applyBulkDecision("Reject pending", "rejected", isPendingChange);
   };
 
   const setAllFactEvidence = (evidenceStatus: EvidenceStatus) => {
@@ -328,7 +402,6 @@ export function SmartCareerIntake({
         ["Education", proposal.careerItemChanges.filter((change) => change.proposedValue.type === "education")],
         ["Facts", proposal.careerFactChanges],
         ["Skills", proposal.skillChanges],
-        ["Conflicts", allChanges(proposal).filter((change) => change.validationStatus === "conflict")],
         ["Questions requiring answers", []],
       ] as const
     : [];
@@ -339,11 +412,18 @@ export function SmartCareerIntake({
     (filter === "conflicts" && change.validationStatus === "conflict");
   const proposalChanges = proposal ? allChanges(proposal) : [];
   const proposalBreakdown = {
-    safe: proposalChanges.filter((change) => change.validationStatus === "valid" && !change.duplicateCandidates.length).length,
+    safe: proposalChanges.filter(isSaveableWithoutMerge).length,
     needsConfirmation: proposalChanges.filter((change) => change.validationStatus === "warning").length,
     conflicts: proposalChanges.filter((change) => change.validationStatus === "conflict" || change.validationStatus === "invalid").length,
     duplicates: proposalChanges.filter((change) => change.duplicateCandidates.length).length,
+    pending: proposalChanges.filter((change) => change.userDecision === "pending").length,
     skipped: proposalChanges.filter((change) => change.userDecision === "rejected").length,
+    mergeableDuplicates: proposalChanges.filter(isMergeableDuplicate).length,
+    blocked: proposalChanges.filter(isBlockedChange).length,
+    pendingSafe: proposalChanges.filter((change) => isPendingChange(change) && isSaveableWithoutMerge(change)).length,
+    pendingMergeableDuplicates: proposalChanges.filter((change) => isPendingChange(change) && isMergeableDuplicate(change)).length,
+    pendingDuplicates: proposalChanges.filter((change) => isPendingChange(change) && change.duplicateCandidates.length).length,
+    pendingBlocked: proposalChanges.filter((change) => isPendingChange(change) && isBlockedChange(change)).length,
   };
 
   return (
@@ -387,14 +467,19 @@ export function SmartCareerIntake({
           items={[
             { label: "Input collected", complete: Boolean(sourceText.trim()), detail: sourceTitle || "Add a source title to make review easier." },
             { label: "Proposal generated", complete: Boolean(proposal), detail: proposal ? `${proposalChanges.length} proposed changes` : "Run extraction to preview changes.", warning: true },
-            { label: "Conflicts resolved", complete: Boolean(proposal && proposalBreakdown.conflicts === 0), detail: proposal ? `${proposalBreakdown.conflicts} conflicts or invalid changes` : "Review after extraction.", warning: true },
-            { label: "Ready to save", complete: readyToSave, detail: readyToSave ? "Only approved changes will be saved." : "Pending, invalid, or conflicting proposals block saving.", warning: true },
+            { label: "Decisions made", complete: Boolean(proposal && proposalBreakdown.pending === 0), detail: proposal ? `${proposalBreakdown.pending} proposals still pending` : "Review after extraction.", warning: true },
+            { label: "Ready to save", complete: readyToSave, detail: readyToSave ? "Only approved or merged changes will be saved." : "Reject invalid rows or mark conflicts as merge/update.", warning: true },
           ]}
         />
       </div>
 
       <div className="mt-5 grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
-        <select className="field" value={mode} onChange={(event) => setMode(event.target.value as CareerImportSourceType)}>
+        <select
+          className="field"
+          value={mode}
+          onChange={(event) => setMode(event.target.value as CareerImportSourceType)}
+          disabled={isExtracting}
+        >
           {modes.map((item) => (
             <option key={item.id} value={item.id}>
               {item.label}
@@ -406,6 +491,7 @@ export function SmartCareerIntake({
           value={sourceTitle}
           placeholder="Source title or reference"
           onChange={(event) => setSourceTitle(event.target.value)}
+          disabled={isExtracting}
         />
       </div>
 
@@ -428,20 +514,42 @@ export function SmartCareerIntake({
             : "Paste career information, project notes, resume text, or interview answers"
         }
         onChange={(event) => setSourceText(event.target.value)}
+        disabled={isExtracting}
       />
       <div className="mt-3 flex flex-wrap gap-2">
-        <button className="button button-primary" type="button" onClick={extract} disabled={!sourceText.trim()}>
-          {mode === "structured_package" ? <FileJson size={15} aria-hidden="true" /> : <Wand2 size={15} aria-hidden="true" />}
-          {settings.aiProvider === "openai" && mode !== "structured_package" && mode !== "guided_interview"
-            ? "Extract with OpenAI"
-            : "Generate proposal"}
+        <button
+          className="button button-primary"
+          type="button"
+          onClick={extract}
+          disabled={!sourceText.trim() || isExtracting}
+          aria-busy={isExtracting}
+        >
+          {isExtracting ? (
+            <LoaderCircle size={15} aria-hidden="true" className="animate-spin" />
+          ) : mode === "structured_package" ? (
+            <FileJson size={15} aria-hidden="true" />
+          ) : (
+            <Wand2 size={15} aria-hidden="true" />
+          )}
+          {isExtracting
+            ? usesOpenAIExtraction
+              ? "Extracting with OpenAI..."
+              : "Generating proposal..."
+            : usesOpenAIExtraction
+              ? "Extract with OpenAI"
+              : "Generate proposal"}
         </button>
-        <button className="button" type="button" onClick={() => setSourceText("")}>
+        <button className="button" type="button" onClick={() => setSourceText("")} disabled={isExtracting}>
           <X size={15} aria-hidden="true" />
           Clear
         </button>
         {mode === "guided_interview" ? (
-          <button className="button" type="button" onClick={() => setStatus("Draft saved locally in this review panel.")}>
+          <button
+            className="button"
+            type="button"
+            onClick={() => setStatus("Draft saved locally in this review panel.")}
+            disabled={isExtracting}
+          >
             <Upload size={15} aria-hidden="true" />
             Save draft
           </button>
@@ -456,13 +564,14 @@ export function SmartCareerIntake({
             <div>
               <h4 className="text-base font-semibold text-slate-950">Review import proposal</h4>
               <p className="mt-1 text-sm leading-6 text-slate-600">
-                Safe changes can be bulk approved. Conflicts, duplicates, and sensitive-looking values should be reviewed individually.
+                Bulk actions handle repetitive rows. Duplicates can be skipped or merged into the matching existing record.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Badge tone="emerald">{proposalBreakdown.safe} safe to import</Badge>
                 <Badge tone="amber">{proposalBreakdown.needsConfirmation} need confirmation</Badge>
                 <Badge tone="red">{proposalBreakdown.conflicts} conflicts</Badge>
                 <Badge tone="blue">{proposalBreakdown.duplicates} possible duplicates</Badge>
+                <Badge>{proposalBreakdown.pending} pending decisions</Badge>
                 <Badge>{proposalBreakdown.skipped} skipped</Badge>
               </div>
             </div>
@@ -472,13 +581,35 @@ export function SmartCareerIntake({
                 <option value="warnings">Warnings/errors</option>
                 <option value="conflicts">Conflicts</option>
               </select>
-              <button className="button" type="button" onClick={bulkApproveSafe}>
+            </div>
+          </div>
+          <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-slate-700">Bulk resolution</span>
+              <button className="button" type="button" onClick={bulkApproveSaveable} disabled={proposalBreakdown.pendingSafe === 0}>
                 <CheckCheck size={15} aria-hidden="true" />
-                Approve safe
+                Approve saveable ({proposalBreakdown.pendingSafe})
               </button>
-              <button className="button button-danger" type="button" onClick={rejectAll}>
+              <button
+                className="button"
+                type="button"
+                onClick={bulkMergeDuplicates}
+                disabled={proposalBreakdown.pendingMergeableDuplicates === 0}
+              >
+                <Merge size={15} aria-hidden="true" />
+                Merge duplicates ({proposalBreakdown.pendingMergeableDuplicates})
+              </button>
+              <button className="button" type="button" onClick={bulkRejectDuplicates} disabled={proposalBreakdown.pendingDuplicates === 0}>
                 <X size={15} aria-hidden="true" />
-                Reject all
+                Reject duplicates ({proposalBreakdown.pendingDuplicates})
+              </button>
+              <button className="button button-danger" type="button" onClick={bulkRejectBlocked} disabled={proposalBreakdown.pendingBlocked === 0}>
+                <X size={15} aria-hidden="true" />
+                Reject invalid/conflicts ({proposalBreakdown.pendingBlocked})
+              </button>
+              <button className="button button-danger" type="button" onClick={rejectPending} disabled={proposalBreakdown.pending === 0}>
+                <X size={15} aria-hidden="true" />
+                Reject pending
               </button>
             </div>
           </div>
@@ -524,18 +655,37 @@ export function SmartCareerIntake({
                           <p className="mt-1 text-sm text-slate-600">{change.reason}</p>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                          <button className="button" type="button" onClick={() => setDecision(change.proposalId, "approved")}>
+                          <button
+                            className={decisionButtonClass(change, "approved")}
+                            type="button"
+                            aria-pressed={change.userDecision === "approved"}
+                            onClick={() => setDecision(change.proposalId, "approved")}
+                            disabled={isBlockedChange(change)}
+                            title={isBlockedChange(change) ? "Invalid and conflicting rows must be edited, merged, or rejected." : "Approve this proposal"}
+                          >
                             <Check size={14} aria-hidden="true" />
                             Approve
                           </button>
                           <button className="button" type="button" onClick={() => beginEdit(change)}>
                             Edit
                           </button>
-                          <button className="button" type="button" onClick={() => setDecision(change.proposalId, "merge")}>
+                          <button
+                            className={decisionButtonClass(change, "merge")}
+                            type="button"
+                            aria-pressed={change.userDecision === "merge"}
+                            onClick={() => setDecision(change.proposalId, "merge")}
+                            disabled={!change.duplicateCandidates.length && change.validationStatus !== "conflict"}
+                            title="Merge/update the existing matching record with this proposal"
+                          >
                             <Merge size={14} aria-hidden="true" />
-                            Merge
+                            Merge/update
                           </button>
-                          <button className="button button-danger" type="button" onClick={() => setDecision(change.proposalId, "rejected")}>
+                          <button
+                            className={decisionButtonClass(change, "rejected", true)}
+                            type="button"
+                            aria-pressed={change.userDecision === "rejected"}
+                            onClick={() => setDecision(change.proposalId, "rejected")}
+                          >
                             Reject
                           </button>
                         </div>
@@ -602,7 +752,7 @@ export function SmartCareerIntake({
           </div>
           {!readyToSave ? (
             <p className="mt-2 text-right text-xs font-semibold text-amber-700">
-              Resolve every pending, invalid, or conflicting proposal before saving.
+              Resolve every pending proposal. Invalid rows must be rejected or edited; conflicts must be merged/updated or rejected.
             </p>
           ) : null}
         </div>

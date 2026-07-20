@@ -25,7 +25,9 @@ import type {
   Profile,
   ResumeArchive,
   ResumeFavorite,
+  ResumeImprovementRun,
   ResumeRecommendation,
+  ResumeReview,
   ResumeVersion,
   SavedApplicationAnswer,
   SearchDiagnostics,
@@ -43,6 +45,7 @@ import {
   normalizeTailoredResume,
   normalizeValidationIssues,
 } from "../resume/normalize";
+import { normalizeResumeDocument, resumeDocumentFromTailoredResume } from "../resume/document";
 import { buildSearchDocuments } from "../search/documentModel";
 import { deterministicSearch } from "../search/text";
 import { applyCareerImportToState } from "./careerImportPersistence";
@@ -284,16 +287,39 @@ function mapJob(row: Row): Job {
 }
 
 function mapResume(row: Row): ResumeVersion {
+  const id = asString(row.id);
+  const name = asString(row.name);
+  const templateId = asString(row.template_id);
+  const contentJson = normalizeTailoredResume(parseJson(row.content_json, {}));
+  const kind = (asString(row.kind) || "tailored") as ResumeVersion["kind"];
+  const parentResumeVersionId = asString(row.parent_resume_version_id);
+  const sourceJobId = asString(row.job_id);
+  const createdAt = asString(row.created_at);
+  const updatedAt = asString(row.updated_at);
+  const fallbackDocument = resumeDocumentFromTailoredResume({
+    resume: contentJson,
+    id,
+    name,
+    kind,
+    parentResumeId: parentResumeVersionId || undefined,
+    sourceJobId: sourceJobId || undefined,
+    templateId,
+    createdAt,
+    updatedAt,
+  });
   return {
-    id: asString(row.id),
-    jobId: asString(row.job_id),
-    name: asString(row.name),
-    templateId: asString(row.template_id),
-    contentJson: normalizeTailoredResume(parseJson(row.content_json, {})),
+    id,
+    jobId: sourceJobId,
+    name,
+    kind,
+    templateId,
+    contentJson,
+    resumeDocumentJson: normalizeResumeDocument(parseJson(row.resume_document_json, null), fallbackDocument),
     validationJson: normalizeValidationIssues(parseJson(row.validation_json, [])),
     status: row.status as ResumeVersion["status"],
     lastExportPath: asString(row.last_export_path),
-    parentResumeVersionId: asString(row.parent_resume_version_id),
+    parentResumeVersionId,
+    baseResumeVersionId: asString(row.base_resume_version_id) || parentResumeVersionId,
     generationProvider:
       (asString(row.generation_provider) || "deterministic") as ResumeVersion["generationProvider"],
     generationModel: asString(row.generation_model),
@@ -314,8 +340,8 @@ function mapResume(row: Row): ResumeVersion {
     deterministicBaselineJson: row.deterministic_baseline_json
       ? normalizeTailoredResume(parseJson(row.deterministic_baseline_json, {}))
       : null,
-    createdAt: asString(row.created_at),
-    updatedAt: asString(row.updated_at),
+    createdAt,
+    updatedAt,
   };
 }
 
@@ -451,6 +477,47 @@ function mapResumeRecommendation(row: Row): ResumeRecommendation {
       requiredChanges: [],
       submitted: false,
     }) as ResumeRecommendation["explanationJson"],
+    createdAt: asString(row.created_at),
+  };
+}
+
+function mapResumeReview(row: Row): ResumeReview {
+  return {
+    id: asString(row.id),
+    resumeId: asString(row.resume_id),
+    jobId: asString(row.job_id) || undefined,
+    reviewMode: row.review_mode as ResumeReview["reviewMode"],
+    overallScore: Number(row.overall_score ?? 0),
+    categoryScores: parseJson(row.category_scores_json, []) as ResumeReview["categoryScores"],
+    strengths: parseJson(row.strengths_json, []) as ResumeReview["strengths"],
+    weaknesses: parseJson(row.weaknesses_json, []) as ResumeReview["weaknesses"],
+    criticalIssues: parseJson(row.critical_issues_json, []) as ResumeReview["criticalIssues"],
+    recommendedChanges: parseJson(row.recommended_changes_json, []) as ResumeReview["recommendedChanges"],
+    factualRiskLevel: row.factual_risk_level as ResumeReview["factualRiskLevel"],
+    readyToSubmit: asBool(row.ready_to_submit),
+    generatedAt: asString(row.generated_at),
+    provider: asString(row.provider),
+    model: asString(row.model),
+  };
+}
+
+function mapResumeImprovementRun(row: Row): ResumeImprovementRun {
+  return {
+    id: asString(row.id),
+    sourceResumeId: asString(row.source_resume_id),
+    improvedResumeId: asString(row.improved_resume_id),
+    jobId: asString(row.job_id) || undefined,
+    reviewMode: row.review_mode as ResumeImprovementRun["reviewMode"],
+    originalReviewId: asString(row.original_review_id),
+    improvedReviewId: asString(row.improved_review_id),
+    appliedProposalIds: parseArray(row.applied_proposal_ids_json),
+    skippedProposalIds: parseArray(row.skipped_proposal_ids_json),
+    diff: parseJson(row.diff_json, []) as ResumeImprovementRun["diff"],
+    pdfStatus: row.pdf_status as ResumeImprovementRun["pdfStatus"],
+    pdfPageCount: row.pdf_page_count === null || row.pdf_page_count === undefined
+      ? null
+      : Number(row.pdf_page_count),
+    pdfError: asString(row.pdf_error),
     createdAt: asString(row.created_at),
   };
 }
@@ -652,6 +719,8 @@ export class SqliteRepository implements AppRepository {
     await this.db.execute("DELETE FROM search_embeddings");
     await this.db.execute("DELETE FROM search_documents");
     await this.db.execute("DELETE FROM resume_recommendations");
+    await this.db.execute("DELETE FROM resume_improvement_runs");
+    await this.db.execute("DELETE FROM resume_reviews");
     await this.db.execute("DELETE FROM resume_favorites");
     await this.db.execute("DELETE FROM resume_archives");
     await this.db.execute("DELETE FROM saved_application_answers");
@@ -1297,16 +1366,39 @@ export class SqliteRepository implements AppRepository {
       : [];
     const mapped = existing[0] ? mapResume(existing[0]) : undefined;
     const now = nowIso();
+    const savedId = mapped?.id ?? resume.id ?? createId("resume");
+    const savedName = resume.name ?? mapped?.name ?? "Tailored resume";
+    const savedKind = resume.kind ?? mapped?.kind ?? "tailored";
+    const parentResumeVersionId = resume.parentResumeVersionId ?? mapped?.parentResumeVersionId ?? "";
+    const baseResumeVersionId =
+      resume.baseResumeVersionId ?? mapped?.baseResumeVersionId ?? parentResumeVersionId;
+    const templateId = resume.templateId ?? mapped?.templateId ?? defaultSettings.defaultTemplateId;
     const saved: ResumeVersion = {
-      id: mapped?.id ?? resume.id ?? createId("resume"),
+      id: savedId,
       jobId: resume.jobId,
-      name: resume.name ?? mapped?.name ?? "Tailored resume",
-      templateId: resume.templateId ?? mapped?.templateId ?? defaultSettings.defaultTemplateId,
+      name: savedName,
+      kind: savedKind,
+      templateId,
       contentJson: resume.contentJson,
+      resumeDocumentJson: normalizeResumeDocument(
+        resume.resumeDocumentJson,
+        resumeDocumentFromTailoredResume({
+          resume: resume.contentJson,
+          id: savedId,
+          name: savedName,
+          kind: savedKind,
+          parentResumeId: parentResumeVersionId || undefined,
+          sourceJobId: resume.jobId || undefined,
+          templateId,
+          createdAt: mapped?.createdAt ?? now,
+          updatedAt: now,
+        }),
+      ),
       validationJson: resume.validationJson ?? mapped?.validationJson ?? [],
       status: resume.status ?? mapped?.status ?? "draft",
       lastExportPath: resume.lastExportPath ?? mapped?.lastExportPath ?? "",
-      parentResumeVersionId: resume.parentResumeVersionId ?? mapped?.parentResumeVersionId ?? "",
+      parentResumeVersionId,
+      baseResumeVersionId,
       generationProvider: resume.generationProvider ?? mapped?.generationProvider ?? "deterministic",
       generationModel: resume.generationModel ?? mapped?.generationModel ?? "",
       promptVersion: resume.promptVersion ?? mapped?.promptVersion ?? "",
@@ -1327,13 +1419,17 @@ export class SqliteRepository implements AppRepository {
         id, job_id, name, template_id, content_json, validation_json, status, last_export_path,
         created_at, updated_at, parent_resume_version_id, generation_provider, generation_model,
         prompt_version, generation_metadata_json, deterministic_baseline_json,
-        prompt_versions_json, layout_profile_id, template_settings_json
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        prompt_versions_json, layout_profile_id, template_settings_json, kind,
+        base_resume_version_id, resume_document_json
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT(id) DO UPDATE SET
         job_id = excluded.job_id, name = excluded.name, template_id = excluded.template_id,
         content_json = excluded.content_json, validation_json = excluded.validation_json,
         status = excluded.status, last_export_path = excluded.last_export_path,
         parent_resume_version_id = excluded.parent_resume_version_id,
+        kind = excluded.kind,
+        base_resume_version_id = excluded.base_resume_version_id,
+        resume_document_json = excluded.resume_document_json,
         generation_provider = excluded.generation_provider,
         generation_model = excluded.generation_model,
         prompt_version = excluded.prompt_version,
@@ -1363,6 +1459,9 @@ export class SqliteRepository implements AppRepository {
         JSON.stringify(saved.promptVersionsJson),
         saved.layoutProfileId,
         JSON.stringify(saved.templateSettingsJson),
+        saved.kind,
+        saved.baseResumeVersionId,
+        JSON.stringify(saved.resumeDocumentJson),
       ],
     );
     return saved;
@@ -1952,9 +2051,11 @@ export class SqliteRepository implements AppRepository {
       resumeFavorites: await this.listResumeFavorites(),
       resumeArchives: await this.listResumeArchives(),
       resumeRecommendations: await this.listResumeRecommendations(),
+      resumeReviews: await this.listResumeReviews(),
+      resumeImprovementRuns: await this.listResumeImprovementRuns(),
       settings: await this.getSettings(),
       exportedAt: nowIso(),
-      schemaVersion: 5,
+      schemaVersion: 7,
     };
   }
 
@@ -1967,6 +2068,8 @@ export class SqliteRepository implements AppRepository {
         await this.db.execute("DELETE FROM search_embeddings");
         await this.db.execute("DELETE FROM search_documents");
         await this.db.execute("DELETE FROM resume_recommendations");
+        await this.db.execute("DELETE FROM resume_improvement_runs");
+        await this.db.execute("DELETE FROM resume_reviews");
         await this.db.execute("DELETE FROM resume_favorites");
         await this.db.execute("DELETE FROM resume_archives");
         await this.db.execute("DELETE FROM saved_application_answers");
@@ -1998,6 +2101,8 @@ export class SqliteRepository implements AppRepository {
       for (const answer of payload.approvedApplicationAnswers ?? []) await this.saveApprovedApplicationAnswer(answer);
       for (const job of payload.jobs) await this.saveJob(job);
       for (const resume of payload.resumes) await this.saveResumeVersion(resume);
+      for (const review of payload.resumeReviews ?? []) await this.saveResumeReview(review);
+      for (const run of payload.resumeImprovementRuns ?? []) await this.saveResumeImprovementRun(run);
       for (const variant of payload.approvedVariants ?? []) await this.saveApprovedBulletVariant(variant);
       for (const application of payload.applications ?? []) await this.saveApplication(application);
       for (const field of payload.applicationFields ?? []) await this.saveApplicationField(field);
@@ -2319,6 +2424,117 @@ export class SqliteRepository implements AppRepository {
     });
   }
 
+  async listResumeReviews(resumeId?: string) {
+    const rows = resumeId
+      ? await this.db.select<Row[]>(
+          "SELECT * FROM resume_reviews WHERE resume_id = $1 ORDER BY generated_at DESC",
+          [resumeId],
+        )
+      : await this.db.select<Row[]>("SELECT * FROM resume_reviews ORDER BY generated_at DESC");
+    return rows.map(mapResumeReview);
+  }
+
+  async getResumeReview(id: string) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM resume_reviews WHERE id = $1", [id]);
+    return rows[0] ? mapResumeReview(rows[0]) : null;
+  }
+
+  async saveResumeReview(review: ResumeReview) {
+    await this.db.execute(
+      `INSERT INTO resume_reviews (
+        id, resume_id, job_id, review_mode, overall_score, category_scores_json,
+        strengths_json, weaknesses_json, critical_issues_json, recommended_changes_json,
+        factual_risk_level, ready_to_submit, generated_at, provider, model
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ON CONFLICT(id) DO UPDATE SET
+        resume_id = excluded.resume_id,
+        job_id = excluded.job_id,
+        review_mode = excluded.review_mode,
+        overall_score = excluded.overall_score,
+        category_scores_json = excluded.category_scores_json,
+        strengths_json = excluded.strengths_json,
+        weaknesses_json = excluded.weaknesses_json,
+        critical_issues_json = excluded.critical_issues_json,
+        recommended_changes_json = excluded.recommended_changes_json,
+        factual_risk_level = excluded.factual_risk_level,
+        ready_to_submit = excluded.ready_to_submit,
+        generated_at = excluded.generated_at,
+        provider = excluded.provider,
+        model = excluded.model`,
+      [
+        review.id,
+        review.resumeId,
+        review.jobId ?? "",
+        review.reviewMode,
+        review.overallScore,
+        JSON.stringify(review.categoryScores),
+        JSON.stringify(review.strengths),
+        JSON.stringify(review.weaknesses),
+        JSON.stringify(review.criticalIssues),
+        JSON.stringify(review.recommendedChanges),
+        review.factualRiskLevel,
+        review.readyToSubmit ? 1 : 0,
+        review.generatedAt,
+        review.provider,
+        review.model,
+      ],
+    );
+    return review;
+  }
+
+  async listResumeImprovementRuns(resumeId?: string) {
+    const rows = resumeId
+      ? await this.db.select<Row[]>(
+          `SELECT * FROM resume_improvement_runs
+           WHERE source_resume_id = $1 OR improved_resume_id = $1
+           ORDER BY created_at DESC`,
+          [resumeId],
+        )
+      : await this.db.select<Row[]>("SELECT * FROM resume_improvement_runs ORDER BY created_at DESC");
+    return rows.map(mapResumeImprovementRun);
+  }
+
+  async saveResumeImprovementRun(run: ResumeImprovementRun) {
+    await this.db.execute(
+      `INSERT INTO resume_improvement_runs (
+        id, source_resume_id, improved_resume_id, job_id, review_mode, original_review_id,
+        improved_review_id, applied_proposal_ids_json, skipped_proposal_ids_json, diff_json,
+        pdf_status, pdf_page_count, pdf_error, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      ON CONFLICT(id) DO UPDATE SET
+        source_resume_id = excluded.source_resume_id,
+        improved_resume_id = excluded.improved_resume_id,
+        job_id = excluded.job_id,
+        review_mode = excluded.review_mode,
+        original_review_id = excluded.original_review_id,
+        improved_review_id = excluded.improved_review_id,
+        applied_proposal_ids_json = excluded.applied_proposal_ids_json,
+        skipped_proposal_ids_json = excluded.skipped_proposal_ids_json,
+        diff_json = excluded.diff_json,
+        pdf_status = excluded.pdf_status,
+        pdf_page_count = excluded.pdf_page_count,
+        pdf_error = excluded.pdf_error,
+        created_at = excluded.created_at`,
+      [
+        run.id,
+        run.sourceResumeId,
+        run.improvedResumeId,
+        run.jobId ?? "",
+        run.reviewMode,
+        run.originalReviewId,
+        run.improvedReviewId,
+        JSON.stringify(run.appliedProposalIds),
+        JSON.stringify(run.skippedProposalIds),
+        JSON.stringify(run.diff),
+        run.pdfStatus,
+        run.pdfPageCount,
+        run.pdfError,
+        run.createdAt,
+      ],
+    );
+    return run;
+  }
+
   async listResumeFavorites(): Promise<ResumeFavorite[]> {
     return (await this.db.select<Row[]>("SELECT * FROM resume_favorites ORDER BY created_at DESC")).map((row) => ({
       resumeVersionId: asString(row.resume_version_id),
@@ -2618,9 +2834,12 @@ export class SqliteRepository implements AppRepository {
         id: undefined,
         jobId: String(action.afterJson.targetJobId ?? base.jobId),
         name: String(action.afterJson.name ?? `${base.name} - child draft`),
+        kind: "tailored",
         status: "draft",
         lastExportPath: "",
         parentResumeVersionId: base.id,
+        baseResumeVersionId: base.id,
+        deterministicBaselineJson: base.contentJson,
         createdAt: undefined,
         updatedAt: undefined,
       });

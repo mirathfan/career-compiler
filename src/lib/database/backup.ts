@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { BackupPayload } from "../../types/domain";
 import { PROMPT_VERSIONS } from "../ai/prompts";
+import { normalizeTailoredResume } from "../resume/normalize";
+import { normalizeResumeDocument, resumeDocumentFromTailoredResume } from "../resume/document";
 import { defaultSettings } from "./seed";
 
 const BackupEnvelopeSchema = z.object({
@@ -26,9 +28,11 @@ const BackupEnvelopeSchema = z.object({
   resumeFavorites: z.array(z.unknown()).optional().default([]),
   resumeArchives: z.array(z.unknown()).optional().default([]),
   resumeRecommendations: z.array(z.unknown()).optional().default([]),
+  resumeReviews: z.array(z.unknown()).optional().default([]),
+  resumeImprovementRuns: z.array(z.unknown()).optional().default([]),
   settings: z.unknown(),
   exportedAt: z.string(),
-  schemaVersion: z.number().int().min(1).max(5),
+  schemaVersion: z.number().int().min(1).max(7),
 });
 
 function containsSecret(text: string) {
@@ -50,12 +54,32 @@ export function parseBackupText(text: string): BackupPayload {
       lastReviewedDate: fact.lastReviewedDate ?? "",
       notes: fact.notes ?? "",
     })),
-    resumes: raw.resumes.map((resume) => ({
-      ...resume,
-      promptVersionsJson: resume.promptVersionsJson ?? PROMPT_VERSIONS,
-      layoutProfileId: resume.layoutProfileId ?? "general-software-engineer",
-      templateSettingsJson: resume.templateSettingsJson ?? defaultSettings.templateSettings,
-    })),
+    resumes: raw.resumes.map((resume) => {
+      const contentJson = normalizeTailoredResume(resume.contentJson);
+      const kind = resume.kind ?? "tailored";
+      const templateId = resume.templateId ?? defaultSettings.defaultTemplateId;
+      const fallbackDocument = resumeDocumentFromTailoredResume({
+        resume: contentJson,
+        id: resume.id,
+        name: resume.name ?? "Resume",
+        kind,
+        parentResumeId: resume.parentResumeVersionId || undefined,
+        sourceJobId: resume.jobId || undefined,
+        templateId,
+        createdAt: resume.createdAt ?? "",
+        updatedAt: resume.updatedAt ?? "",
+      });
+      return {
+        ...resume,
+        kind,
+        contentJson,
+        baseResumeVersionId: resume.baseResumeVersionId ?? resume.parentResumeVersionId ?? "",
+        resumeDocumentJson: normalizeResumeDocument(resume.resumeDocumentJson, fallbackDocument),
+        promptVersionsJson: resume.promptVersionsJson ?? PROMPT_VERSIONS,
+        layoutProfileId: resume.layoutProfileId ?? "general-software-engineer",
+        templateSettingsJson: resume.templateSettingsJson ?? defaultSettings.templateSettings,
+      };
+    }),
     candidateClaims: raw.candidateClaims ?? [],
     sensitiveAnswers: raw.sensitiveAnswers ?? [],
     candidatePreferences: raw.candidatePreferences ?? null,
@@ -72,6 +96,8 @@ export function parseBackupText(text: string): BackupPayload {
     resumeFavorites: raw.resumeFavorites ?? [],
     resumeArchives: raw.resumeArchives ?? [],
     resumeRecommendations: raw.resumeRecommendations ?? [],
+    resumeReviews: raw.resumeReviews ?? [],
+    resumeImprovementRuns: raw.resumeImprovementRuns ?? [],
     settings: {
       ...defaultSettings,
       ...raw.settings,
@@ -94,7 +120,7 @@ export function parseBackupText(text: string): BackupPayload {
         raw.settings.allowContactFieldsInCopilotContext ??
         defaultSettings.allowContactFieldsInCopilotContext,
     },
-    schemaVersion: 5,
+    schemaVersion: 7,
   };
 }
 
@@ -120,6 +146,8 @@ export function createBackupPreview(payload: BackupPayload, current?: BackupPayl
     resumeFavorites: payload.resumeFavorites,
     resumeArchives: payload.resumeArchives,
     resumeRecommendations: payload.resumeRecommendations,
+    resumeReviews: payload.resumeReviews,
+    resumeImprovementRuns: payload.resumeImprovementRuns,
   };
   const keyFor = (item: unknown) => {
     const value = item as { id?: string; resumeVersionId?: string };

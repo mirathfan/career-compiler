@@ -471,4 +471,61 @@ export const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_applications_autofill ON applications(automation_mode, ats_platform);
     `,
   },
+  {
+    id: 6,
+    name: "canonical_resume_documents",
+    sql: `
+      ALTER TABLE resume_versions ADD COLUMN kind TEXT NOT NULL DEFAULT 'tailored' CHECK(kind IN ('master','tailored','imported'));
+      ALTER TABLE resume_versions ADD COLUMN base_resume_version_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE resume_versions ADD COLUMN resume_document_json TEXT NOT NULL DEFAULT '';
+
+      CREATE INDEX IF NOT EXISTS idx_resume_versions_kind ON resume_versions(kind, created_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_versions_base ON resume_versions(base_resume_version_id);
+    `,
+  },
+  {
+    id: 7,
+    name: "resume_review_optimizer",
+    sql: `
+      CREATE TABLE IF NOT EXISTS resume_reviews (
+        id TEXT PRIMARY KEY,
+        resume_id TEXT NOT NULL REFERENCES resume_versions(id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL DEFAULT '',
+        review_mode TEXT NOT NULL CHECK(review_mode IN ('general','job_specific','pre_submission')),
+        overall_score REAL NOT NULL,
+        category_scores_json TEXT NOT NULL,
+        strengths_json TEXT NOT NULL,
+        weaknesses_json TEXT NOT NULL,
+        critical_issues_json TEXT NOT NULL,
+        recommended_changes_json TEXT NOT NULL,
+        factual_risk_level TEXT NOT NULL CHECK(factual_risk_level IN ('low','medium','high','critical')),
+        ready_to_submit INTEGER NOT NULL DEFAULT 0,
+        generated_at TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS resume_improvement_runs (
+        id TEXT PRIMARY KEY,
+        source_resume_id TEXT NOT NULL REFERENCES resume_versions(id) ON DELETE CASCADE,
+        improved_resume_id TEXT NOT NULL REFERENCES resume_versions(id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL DEFAULT '',
+        review_mode TEXT NOT NULL CHECK(review_mode IN ('general','job_specific','pre_submission')),
+        original_review_id TEXT NOT NULL REFERENCES resume_reviews(id) ON DELETE CASCADE,
+        improved_review_id TEXT NOT NULL REFERENCES resume_reviews(id) ON DELETE CASCADE,
+        applied_proposal_ids_json TEXT NOT NULL DEFAULT '[]',
+        skipped_proposal_ids_json TEXT NOT NULL DEFAULT '[]',
+        diff_json TEXT NOT NULL DEFAULT '[]',
+        pdf_status TEXT NOT NULL CHECK(pdf_status IN ('not_rendered','rendered','failed')),
+        pdf_page_count INTEGER,
+        pdf_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_resume_reviews_resume ON resume_reviews(resume_id, generated_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_reviews_job ON resume_reviews(job_id, generated_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_improvement_runs_source ON resume_improvement_runs(source_resume_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_resume_improvement_runs_improved ON resume_improvement_runs(improved_resume_id, created_at);
+    `,
+  },
 ];

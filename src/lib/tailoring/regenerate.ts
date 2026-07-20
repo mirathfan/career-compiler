@@ -11,7 +11,9 @@ import { createAIProvider } from "../ai/providerFactory";
 import { PROMPT_VERSION } from "../ai/prompts";
 import type { AppRepository } from "../database/repository";
 import { semanticResumeDiff } from "../resume/diff";
-import { hasBlockingValidationErrors, validateResumeClaims } from "../resume/validation";
+import { allResumeBullets, validateResumeClaims } from "../resume/validation";
+import { unique } from "../utils";
+import { createControlledResumeVariantFromBase } from "./baseVariant";
 import { scoreCareerFacts, splitEvidence } from "./evidence";
 
 function sameFacts(left: string[], right: string[]) {
@@ -89,7 +91,12 @@ export async function regenerateResumeVersion({
   const lockedSections = [...parent.contentJson.projects, ...parent.contentJson.experience].filter(
     (section) => section.locked,
   );
+  const baseFactIds = unique(allResumeBullets(parent.contentJson).flatMap(({ bullet }) => bullet.sourceFactIds));
+  const baseCareerItemIds = unique(
+    [...parent.contentJson.projects, ...parent.contentJson.experience].map((section) => section.careerItemId),
+  );
   const lockedFactIds = new Set([
+    ...baseFactIds,
     ...lockedSections.flatMap((section) => section.bullets.flatMap((bullet) => bullet.sourceFactIds)),
     ...[...parent.contentJson.projects, ...parent.contentJson.experience].flatMap((section) =>
       section.bullets.filter((bullet) => bullet.locked).flatMap((bullet) => bullet.sourceFactIds),
@@ -98,12 +105,12 @@ export async function regenerateResumeVersion({
   const overrides = Object.fromEntries([...lockedFactIds].map((factId) => [factId, true]));
   const evidence = splitEvidence(scoreCareerFacts(analysis, facts, items), overrides);
   const variants = await repository.listApprovedBulletVariants({
-    factIds: evidence.filter((score) => score.selected).map((score) => score.fact.id),
+    factIds: unique([...evidence.filter((score) => score.selected).map((score) => score.fact.id), ...baseFactIds]),
     roleCategories: analysis.roleCategories,
   });
   const controls = {
     ...settings.tailoringDefaults,
-    lockedCareerItemIds: lockedSections.map((section) => section.careerItemId),
+    lockedCareerItemIds: unique([...baseCareerItemIds, ...lockedSections.map((section) => section.careerItemId)]),
     requiredFactIds: [...lockedFactIds],
   };
   const request = buildResumeGenerationRequest({
@@ -121,7 +128,10 @@ export async function regenerateResumeVersion({
     request,
     modelName: settings.modelName,
   });
-  const content = mergeLockedResumeContent(parent.contentJson, generated.resume);
+  const content = createControlledResumeVariantFromBase({
+    base: parent.contentJson,
+    proposed: generated.resume,
+  }).variant;
   const validationJson = validateResumeClaims({
     resume: content,
     facts,
@@ -140,14 +150,19 @@ export async function regenerateResumeVersion({
     templateId: parent.templateId,
     contentJson: content,
     validationJson,
-    status: hasBlockingValidationErrors(validationJson) ? "draft" : "approved",
+    status: "draft",
     lastExportPath: "",
+    kind: "tailored",
     parentResumeVersionId: parent.id,
+    baseResumeVersionId: parent.id,
     generationProvider: settings.aiProvider,
     generationModel: settings.modelName,
     promptVersion: PROMPT_VERSION,
+    promptVersionsJson: parent.promptVersionsJson,
+    layoutProfileId: parent.layoutProfileId,
+    templateSettingsJson: parent.templateSettingsJson,
     generationMetadataJson: metadata,
-    deterministicBaselineJson: generated.deterministicBaseline,
+    deterministicBaselineJson: parent.contentJson,
   });
   return { parent, child, diff: semanticResumeDiff(parent.contentJson, content) };
 }

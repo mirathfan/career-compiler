@@ -1,7 +1,19 @@
 export type CareerItemType = "project" | "employment" | "education";
 export type EvidenceStatus = "user_provided" | "verified" | "needs_review" | "prohibited";
 export type ResumeStatus = "draft" | "approved" | "exported";
+export type ResumeDocumentKind = "master" | "tailored" | "imported";
 export type AIProviderMode = "mock" | "openai";
+export type ResumeReviewMode = "general" | "job_specific" | "pre_submission";
+export type ResumeFactualRiskLevel = "low" | "medium" | "high" | "critical";
+export type ResumeReviewFindingSeverity = "info" | "low" | "medium" | "high" | "critical";
+export type ResumeImprovementSafety = "safe" | "needs_review" | "blocked";
+export type ResumeImprovementKind =
+  | "remove_bullet"
+  | "reorder_bullets"
+  | "condense_layout"
+  | "remove_summary"
+  | "section_order"
+  | "manual_review";
 export type SemanticSearchMode = "disabled" | "openai" | "local";
 export type ResumeGenerationSource = "ai" | "deterministic" | "user";
 export type SummaryMode = "auto" | "always" | "never";
@@ -306,12 +318,15 @@ export interface ResumeVersion {
   id: string;
   jobId: string;
   name: string;
+  kind: ResumeDocumentKind;
   templateId: string;
   contentJson: TailoredResume;
+  resumeDocumentJson: ResumeDocument;
   validationJson: ValidationIssue[];
   status: ResumeStatus;
   lastExportPath: string;
   parentResumeVersionId: string;
+  baseResumeVersionId: string;
   generationProvider: AIProviderMode | "deterministic";
   generationModel: string;
   promptVersion: string;
@@ -429,6 +444,9 @@ export interface ResumeCareerItemSection {
   startDate: string;
   endDate: string;
   isCurrent: boolean;
+  technologies?: string[];
+  url?: string;
+  repositoryUrl?: string;
   locked: boolean;
   bullets: ResumeBullet[];
 }
@@ -439,6 +457,86 @@ export interface ResumeEducationEntry {
   organization: string;
   location: string;
   dateLabel: string;
+}
+
+export interface ResumeContact {
+  fullName: string;
+  location: string;
+  email: string;
+  phone: string;
+  portfolioUrl: string;
+  linkedInUrl: string;
+  githubUrl: string;
+  workAuthorizationNote: string;
+}
+
+export interface ResumeDocumentBullet {
+  id: string;
+  text: string;
+  sourceFactIds: string[];
+  included: boolean;
+  locked: boolean;
+  approved: boolean;
+}
+
+export interface ResumeExperienceEntry {
+  id: string;
+  title: string;
+  organization: string;
+  location: string;
+  startDate: string;
+  endDate: string;
+  isCurrent: boolean;
+  technologies?: string[];
+  bullets: ResumeDocumentBullet[];
+}
+
+export interface ResumeProjectEntry extends ResumeExperienceEntry {
+  url: string;
+  repositoryUrl: string;
+  technologies: string[];
+}
+
+export interface ResumeSkillGroup {
+  id: string;
+  name: string;
+  skills: string[];
+}
+
+export interface ResumeSection {
+  id: string;
+  title: string;
+  content: string[];
+}
+
+export interface ResumeSourceReference {
+  id: string;
+  type: "uploaded_pdf" | "generated_pdf" | "text_import";
+  label: string;
+  path: string;
+  sha256?: string;
+  capturedAt: string;
+}
+
+export interface ResumeDocument {
+  id: string;
+  name: string;
+  kind: ResumeDocumentKind;
+  parentResumeId?: string;
+  sourceJobId?: string;
+  templateId: string;
+  contact: ResumeContact;
+  headline?: string;
+  summary?: string;
+  experience: ResumeExperienceEntry[];
+  projects: ResumeProjectEntry[];
+  education: ResumeEducationEntry[];
+  skills: ResumeSkillGroup[];
+  additionalSections?: ResumeSection[];
+  sourceReferences?: ResumeSourceReference[];
+  sectionOrder: string[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TailoredResume {
@@ -653,7 +751,9 @@ export type ResumeDiffCategory =
   | "reworded"
   | "reordered"
   | "skills_changed"
-  | "section_changed";
+  | "section_changed"
+  | "summary_changed"
+  | "layout_changed";
 
 export interface ResumeDiffEntry {
   category: ResumeDiffCategory;
@@ -765,6 +865,76 @@ export interface ResumeQualityCheck {
   detail: string;
   status: "pass" | "warning" | "error" | "info";
   count: number;
+}
+
+export interface ResumeCategoryScore {
+  id: string;
+  label: string;
+  score: number;
+  weight: number;
+  rationale: string;
+}
+
+export interface ResumeReviewFinding {
+  id: string;
+  severity: ResumeReviewFindingSeverity;
+  category: string;
+  message: string;
+  recommendation: string;
+  bulletId?: string;
+  section?: string;
+  relatedFactIds: string[];
+  blocking: boolean;
+}
+
+export interface ResumeImprovementProposal {
+  id: string;
+  kind: ResumeImprovementKind;
+  safety: ResumeImprovementSafety;
+  title: string;
+  rationale: string;
+  before: string;
+  after: string;
+  bulletId?: string;
+  careerItemId?: string;
+  section?: string;
+  sourceFactIds: string[];
+  applied: boolean;
+}
+
+export interface ResumeReview {
+  id: string;
+  resumeId: string;
+  jobId?: string;
+  reviewMode: ResumeReviewMode;
+  overallScore: number;
+  categoryScores: ResumeCategoryScore[];
+  strengths: ResumeReviewFinding[];
+  weaknesses: ResumeReviewFinding[];
+  criticalIssues: ResumeReviewFinding[];
+  recommendedChanges: ResumeImprovementProposal[];
+  factualRiskLevel: ResumeFactualRiskLevel;
+  readyToSubmit: boolean;
+  generatedAt: string;
+  provider: string;
+  model: string;
+}
+
+export interface ResumeImprovementRun {
+  id: string;
+  sourceResumeId: string;
+  improvedResumeId: string;
+  jobId?: string;
+  reviewMode: ResumeReviewMode;
+  originalReviewId: string;
+  improvedReviewId: string;
+  appliedProposalIds: string[];
+  skippedProposalIds: string[];
+  diff: ResumeDiffEntry[];
+  pdfStatus: "not_rendered" | "rendered" | "failed";
+  pdfPageCount: number | null;
+  pdfError: string;
+  createdAt: string;
 }
 
 export interface ApplicationRecord {
@@ -1217,6 +1387,8 @@ export interface BackupPayload {
   resumeFavorites: ResumeFavorite[];
   resumeArchives: ResumeArchive[];
   resumeRecommendations: ResumeRecommendation[];
+  resumeReviews: ResumeReview[];
+  resumeImprovementRuns: ResumeImprovementRun[];
   settings: AppSettings;
   exportedAt: string;
   schemaVersion: number;

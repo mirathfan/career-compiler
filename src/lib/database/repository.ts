@@ -20,7 +20,9 @@ import type {
   Profile,
   ResumeArchive,
   ResumeFavorite,
+  ResumeImprovementRun,
   ResumeRecommendation,
+  ResumeReview,
   ResumeVersion,
   SavedApplicationAnswer,
   SearchDiagnostics,
@@ -142,6 +144,11 @@ export interface AppRepository {
   listResumeRecommendations(targetJobId?: string): Promise<ResumeRecommendation[]>;
   saveResumeRecommendation(recommendation: ResumeRecommendation): Promise<ResumeRecommendation>;
   dismissResumeRecommendation(id: string): Promise<void>;
+  listResumeReviews(resumeId?: string): Promise<ResumeReview[]>;
+  getResumeReview(id: string): Promise<ResumeReview | null>;
+  saveResumeReview(review: ResumeReview): Promise<ResumeReview>;
+  listResumeImprovementRuns(resumeId?: string): Promise<ResumeImprovementRun[]>;
+  saveResumeImprovementRun(run: ResumeImprovementRun): Promise<ResumeImprovementRun>;
   listResumeFavorites(): Promise<ResumeFavorite[]>;
   setResumeFavorite(resumeVersionId: string, favorite: boolean): Promise<void>;
   listResumeArchives(): Promise<ResumeArchive[]>;

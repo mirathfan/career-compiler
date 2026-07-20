@@ -58,6 +58,9 @@ describe("additive database migrations", () => {
     applyMigration(database, 2);
     applyMigration(database, 3);
     applyMigration(database, 4);
+    applyMigration(database, 5);
+    applyMigration(database, 6);
+    applyMigration(database, 7);
 
     expect(database.exec("SELECT statement, source_note FROM career_facts WHERE id='fact-1'")[0].values[0])
       .toEqual(["Preserve this fact.", "User note"]);
@@ -82,9 +85,11 @@ describe("additive database migrations", () => {
         "resume_recommendations",
         "resume_favorites",
         "resume_archives",
+        "resume_reviews",
+        "resume_improvement_runs",
       ]),
     );
-    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3], [4]]);
+    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3], [4], [5], [6], [7]]);
     database.close();
   });
 
@@ -179,6 +184,42 @@ describe("additive database migrations", () => {
         "submitted_at",
         "job_snapshot_json",
         "status_history_json",
+      ]),
+    );
+    database.close();
+  });
+
+  it("adds resume review optimizer tables additively", () => {
+    const database = createDatabase();
+    applyMigration(database, 1);
+    applyMigration(database, 2);
+    applyMigration(database, 3);
+    applyMigration(database, 4);
+    applyMigration(database, 5);
+    applyMigration(database, 6);
+    applyMigration(database, 7);
+
+    expect(tableNames(database)).toEqual(
+      expect.arrayContaining(["resume_reviews", "resume_improvement_runs"]),
+    );
+    expect(columnNames(database, "resume_reviews")).toEqual(
+      expect.arrayContaining([
+        "resume_id",
+        "review_mode",
+        "overall_score",
+        "category_scores_json",
+        "recommended_changes_json",
+        "ready_to_submit",
+      ]),
+    );
+    expect(columnNames(database, "resume_improvement_runs")).toEqual(
+      expect.arrayContaining([
+        "source_resume_id",
+        "improved_resume_id",
+        "original_review_id",
+        "improved_review_id",
+        "diff_json",
+        "pdf_status",
       ]),
     );
     database.close();

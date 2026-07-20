@@ -17,6 +17,12 @@ function evidenceWeight(status: CareerFact["evidenceStatus"]) {
   return -100;
 }
 
+function sourceWeight(sourceType: CareerFact["sourceType"]) {
+  if (sourceType === "resume" || sourceType === "manually_verified") return 3;
+  if (sourceType === "test_result" || sourceType === "build_output" || sourceType === "deployment_result") return -2;
+  return 0;
+}
+
 export function scoreCareerFacts(
   analysis: JobAnalysis,
   facts: CareerFact[],
@@ -101,9 +107,14 @@ export function scoreCareerFacts(
     }
     score += fact.importance * 2;
     if (fact.metricTokens.length > 0) {
-      score += 4;
-      reasons.push("Contains user-provided metrics.");
+      const supportOnly =
+        fact.sourceType === "test_result" ||
+        fact.sourceType === "build_output" ||
+        fact.sourceType === "deployment_result";
+      score += supportOnly ? 1 : 4;
+      reasons.push(supportOnly ? "Contains supporting verification detail." : "Contains user-provided metrics.");
     }
+    score += sourceWeight(fact.sourceType);
     score += evidenceWeight(fact.evidenceStatus);
     score += Math.max(0, 6 - Math.ceil(item.displayOrder / 50));
     const preferredIndex = roleProfile?.preferredCareerItemIds.indexOf(item.id) ?? -1;

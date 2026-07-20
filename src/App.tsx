@@ -2,17 +2,14 @@ import { lazy, useEffect } from "react";
 import { HashRouter, Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   BarChart3,
-  BookOpenCheck,
   Bot,
   BrainCircuit,
   BriefcaseBusiness,
   ClipboardList,
   Database,
-  FileStack,
   FlaskConical,
   Globe,
   Library,
-  LockKeyhole,
   Settings,
   Sparkles,
 } from "lucide-react";
@@ -43,25 +40,23 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     label: "Main",
     items: [
       { to: "/dashboard", label: "Home", icon: BarChart3 },
-      { to: "/tailor", label: "Jobs", ariaLabel: "Tailor Resume", icon: BriefcaseBusiness, shortcut: "⌘⌥T" },
-      { to: "/applications", label: "Applications", icon: ClipboardList },
+      { to: "/tailor", label: "Resume Builder", ariaLabel: "Tailor Resume", icon: BriefcaseBusiness, shortcut: "⌘⌥T" },
       { to: "/library", label: "Resume Library", icon: Library },
-      { to: "/copilot", label: "Career Copilot", icon: Bot },
+      { to: "/applications", label: "Applications", icon: ClipboardList },
     ],
   },
   {
     label: "Profile",
     items: [
-      { to: "/candidate-brain", label: "Candidate Brain", icon: BrainCircuit },
-      { to: "/candidate-brain?tab=stories", label: "Career Stories", icon: BookOpenCheck },
-      { to: "/candidate-brain?tab=answers", label: "Answer Library", icon: FileStack },
-      { to: "/career-memory?intake=1", label: "Smart Career Intake", icon: Sparkles },
+      { to: "/candidate-brain", label: "My Profile Data", ariaLabel: "Candidate Brain", icon: BrainCircuit },
+      { to: "/career-memory?intake=1", label: "Import Profile Data", icon: Sparkles },
       { to: "/career-memory", label: "Evidence Database", icon: Database },
     ],
   },
   {
     label: "Tools",
     items: [
+      { to: "/copilot", label: "Career Copilot", icon: Bot },
       { to: "/browser-extension", label: "Browser Extension", icon: Globe },
       { to: "/evaluation", label: "Evaluation", icon: FlaskConical },
     ],
@@ -70,7 +65,6 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
     label: "System",
     items: [
       { to: "/settings", label: "Settings", icon: Settings },
-      { to: "/privacy-data", label: "Privacy and Data", icon: LockKeyhole },
     ],
   },
 ];

@@ -55,6 +55,8 @@ export function normalizeTailoredResume(value: unknown): TailoredResume {
         startDate: String(section.startDate ?? ""),
         endDate: String(section.endDate ?? ""),
         isCurrent: Boolean(section.isCurrent),
+        url: section.url ? String(section.url) : undefined,
+        repositoryUrl: section.repositoryUrl ? String(section.repositoryUrl) : undefined,
         locked: Boolean(section.locked),
         bullets: (Array.isArray(section.bullets) ? section.bullets : []).map(normalizeBullet),
       };

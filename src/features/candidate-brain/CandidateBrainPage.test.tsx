@@ -33,6 +33,8 @@ describe("Candidate Brain sensitive vault", () => {
 
     await user.click(await screen.findByRole("button", { name: /run safe seed/i }));
     await user.click(screen.getByRole("link", { name: "Candidate Brain" }));
+    expect(await screen.findByRole("heading", { name: "Resume source of truth" })).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Sensitive answers/i }));
 
     const sponsorship = await screen.findByLabelText("Future sponsorship requirement");
     await user.type(sponsorship, "No");

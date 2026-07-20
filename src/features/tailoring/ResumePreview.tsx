@@ -11,13 +11,24 @@ function PreviewSection({ title, children }: { title: string; children: ReactNod
   );
 }
 
+function contactDisplay(value: string, label: string) {
+  return /^https?:\/\//i.test(value) ? label : value;
+}
+
 function CareerEntries({ sections }: { sections: TailoredResume["projects"] }) {
   return sections.map((section) => (
     <div key={section.careerItemId} className="mt-2">
       <div className="flex justify-between gap-4">
-        <p><strong>{section.title}</strong>{section.organization ? <span> | {section.organization}</span> : null}</p>
+        <p>
+          <strong>{section.title}</strong>{section.organization ? <span> | {section.organization}</span> : null}
+          {section.repositoryUrl ? <span> | GitHub</span> : null}
+          {section.url ? <span> | Live</span> : null}
+        </p>
         <p className="text-slate-500">{formatDateRange(section.startDate, section.endDate, section.isCurrent)}</p>
       </div>
+      {section.technologies?.length ? (
+        <p className="mt-0.5 text-slate-600">{section.technologies.join(", ")}</p>
+      ) : null}
       <ul className="mt-1 list-disc pl-5">
         {section.bullets.filter((bullet) => bullet.included).map((bullet) => <li key={bullet.id}>{bullet.text}</li>)}
       </ul>
@@ -67,7 +78,7 @@ export function ResumePreview({ resume, validationIssues, pageCount }: {
         <span className={errors ? "text-red-700" : "text-emerald-700"}>{errors} errors / {warnings} warnings</span>
       </div>
       <div
-        className="mx-auto min-h-[880px] w-[680px] bg-white p-10 leading-5 shadow-sm ring-1 ring-slate-200"
+        className="mx-auto min-h-[880px] w-full max-w-[680px] bg-white p-6 leading-5 shadow-sm ring-1 ring-slate-200 sm:p-10"
         style={{ fontSize: `${resume.layout.bodyFontSize + 1}px`, lineHeight: 1.25 * resume.layout.spacingScale }}
       >
         <header className="text-center">
@@ -77,9 +88,9 @@ export function ResumePreview({ resume, validationIssues, pageCount }: {
             resume.header.location,
             resume.header.email,
             resume.header.phone,
-            resume.header.portfolioUrl,
-            resume.header.linkedInUrl,
-            resume.header.githubUrl,
+            contactDisplay(resume.header.portfolioUrl, "Portfolio"),
+            contactDisplay(resume.header.linkedInUrl, "LinkedIn"),
+            contactDisplay(resume.header.githubUrl, "GitHub"),
           ].filter(Boolean).join(" | ")}</p>
           {resume.header.workAuthorizationNote ? <p className="text-slate-600">{resume.header.workAuthorizationNote}</p> : null}
         </header>

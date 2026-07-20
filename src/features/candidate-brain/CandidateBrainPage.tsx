@@ -1,7 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { Archive, BookOpenCheck, Check, FileText, Lock, Plus, Save, ShieldAlert, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import {
+  Archive,
+  BookOpenCheck,
+  BriefcaseBusiness,
+  Check,
+  Database,
+  ExternalLink,
+  FileText,
+  Lock,
+  Mail,
+  MapPin,
+  Phone,
+  Plus,
+  Save,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Trash2,
+  Unlock,
+} from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
@@ -9,15 +28,20 @@ import { AlertBanner, Badge, PageSection, ProgressChecklist, SearchInput, Sensit
 import { generateApplicationAnswers } from "../../lib/applications/answerEngine";
 import { normalizeDetectedField } from "../../lib/applications/questionClassifier";
 import { useRepository } from "../../lib/database/repositoryContext";
+import { missingRequiredContactFields } from "../../lib/resume/validation";
 import { parseCsv } from "../../lib/utils";
 import type {
   ApplicationQuestionType,
   ApprovedApplicationAnswer,
   CandidateClaim,
   CandidatePreferences,
+  CareerFact,
+  CareerItem,
   CareerStory,
+  Profile,
   SensitiveAnswer,
   SensitiveAnswerKey,
+  Skill,
   VerificationStatus,
 } from "../../types/domain";
 
@@ -61,6 +85,200 @@ function textValue(value: unknown) {
 
 function pct(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function displayText(value: string | undefined, fallback = "Missing") {
+  const text = value?.trim();
+  return text ? text : fallback;
+}
+
+function profileLocation(profile: Profile | null) {
+  return [profile?.city, profile?.region].filter(Boolean).join(", ");
+}
+
+function factCountByItem(facts: CareerFact[]) {
+  return facts.reduce<Record<string, number>>((counts, fact) => {
+    counts[fact.careerItemId] = (counts[fact.careerItemId] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function itemTypeLabel(type: CareerItem["type"]) {
+  return type.replaceAll("_", " ");
+}
+
+function ResumeSourceOverview({
+  profile,
+  items,
+  facts,
+  skills,
+  preferences,
+  onOpenTab,
+}: {
+  profile: Profile | null;
+  items: CareerItem[];
+  facts: CareerFact[];
+  skills: Skill[];
+  preferences: CandidatePreferences | null;
+  onOpenTab: (tab: "preferences" | "sensitive" | "stories" | "facts") => void;
+}) {
+  const missingContact = missingRequiredContactFields(profile);
+  const enabledItems = items.filter((item) => item.enabled);
+  const eligibleFacts = facts.filter((fact) => fact.enabled && fact.evidenceStatus !== "prohibited");
+  const reviewedFacts = eligibleFacts.filter((fact) => fact.evidenceStatus === "verified" || fact.evidenceStatus === "user_provided");
+  const enabledSkills = skills.filter((skill) => skill.enabled);
+  const counts = factCountByItem(eligibleFacts);
+  const profileLinks = [
+    profile?.portfolioUrl ? { label: "Portfolio", value: profile.portfolioUrl } : null,
+    profile?.linkedInUrl ? { label: "LinkedIn", value: profile.linkedInUrl } : null,
+    profile?.githubUrl ? { label: "GitHub", value: profile.githubUrl } : null,
+  ].filter((link): link is { label: string; value: string } => Boolean(link));
+  const groupedSkills = enabledSkills.reduce<Record<string, Skill[]>>((groups, skill) => {
+    groups[skill.category] = [...(groups[skill.category] ?? []), skill];
+    return groups;
+  }, {});
+
+  return (
+    <PageSection
+      title="Resume source of truth"
+      description="Resume Builder uses the profile header, enabled career records, eligible facts, and enabled skills shown here."
+      actions={
+        <>
+          <Link className="button" to="/career-memory?intake=1">
+            <Sparkles size={15} aria-hidden="true" />
+            Import data
+          </Link>
+          <Link className="button button-primary" to="/tailor">
+            <FileText size={15} aria-hidden="true" />
+            Build resume
+          </Link>
+        </>
+      }
+    >
+      {missingContact.length ? (
+        <AlertBanner tone="amber" title="Resume export is missing contact fields">
+          Missing: {missingContact.join(", ")}.
+        </AlertBanner>
+      ) : null}
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-4">
+          <div className="rounded-md border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Resume header</p>
+                <h3 className="mt-2 text-xl font-semibold text-slate-950">{displayText(profile?.fullName, "No profile saved")}</h3>
+                <p className="mt-1 text-sm text-slate-600">{displayText(profile?.headline, "No headline saved")}</p>
+              </div>
+              <Badge tone={missingContact.length ? "amber" : "emerald"} icon={ShieldCheck}>
+                {missingContact.length ? "missing fields" : "header ready"}
+              </Badge>
+            </div>
+            <div className="mt-4 grid gap-2 text-sm text-slate-700 md:grid-cols-3">
+              <div className="flex min-w-0 items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+                <MapPin size={15} aria-hidden="true" className="shrink-0 text-slate-500" />
+                <span className="truncate">{displayText(profileLocation(profile), "Location missing")}</span>
+              </div>
+              <div className="flex min-w-0 items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+                <Mail size={15} aria-hidden="true" className="shrink-0 text-slate-500" />
+                <span className="truncate">{displayText(profile?.email, "Email missing")}</span>
+              </div>
+              <div className="flex min-w-0 items-center gap-2 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+                <Phone size={15} aria-hidden="true" className="shrink-0 text-slate-500" />
+                <span className="truncate">{displayText(profile?.phone, "Phone missing")}</span>
+              </div>
+            </div>
+            {profileLinks.length ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {profileLinks.map((link) => (
+                  <a key={link.label} className="button" href={link.value} target="_blank" rel="noreferrer">
+                    <ExternalLink size={14} aria-hidden="true" />
+                    {link.label}
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {enabledItems.slice(0, 6).map((item) => (
+              <div key={item.id} className="rounded-md border border-slate-200 bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-slate-950">{item.title}</p>
+                    <p className="mt-1 truncate text-sm text-slate-500">{item.organization || itemTypeLabel(item.type)}</p>
+                  </div>
+                  <Badge tone={item.type === "project" ? "blue" : item.type === "education" ? "purple" : "slate"}>
+                    {itemTypeLabel(item.type)}
+                  </Badge>
+                </div>
+                <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600">{item.shortDescription || "No description saved."}</p>
+                <p className="mt-3 text-xs font-semibold text-slate-500">{counts[item.id] ?? 0} eligible facts</p>
+              </div>
+            ))}
+            {!enabledItems.length ? (
+              <div className="rounded-md border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-600">
+                No enabled career records yet.
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <aside className="space-y-4">
+          <div className="rounded-md border border-slate-200 bg-white p-4">
+            <p className="font-semibold text-slate-950">Resume inventory</p>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <StatCard label="Records" value={enabledItems.length} icon={BriefcaseBusiness} detail="Enabled projects, work, and education" />
+              <StatCard label="Facts" value={eligibleFacts.length} icon={Database} detail={`${reviewedFacts.length} reviewed or user-provided`} tone={eligibleFacts.length ? "emerald" : "amber"} />
+              <StatCard label="Skills" value={enabledSkills.length} icon={ShieldCheck} detail="Enabled for keyword matching" />
+              <StatCard label="Targets" value={preferences?.targetRoles.length ?? 0} icon={BookOpenCheck} detail="Saved role preferences" tone={preferences?.targetRoles.length ? "blue" : "amber"} />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-semibold text-slate-950">Target roles</p>
+              <button className="button" type="button" onClick={() => onOpenTab("preferences")}>
+                Edit
+              </button>
+            </div>
+            <div className="mt-3">
+              <TagList tags={preferences?.targetRoles.length ? preferences.targetRoles : ["No target roles saved"]} tone={preferences?.targetRoles.length ? "blue" : "slate"} />
+            </div>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-white p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-semibold text-slate-950">Skills</p>
+              <button className="button" type="button" onClick={() => onOpenTab("facts")}>
+                Review facts
+              </button>
+            </div>
+            <div className="mt-3 space-y-3">
+              {Object.entries(groupedSkills).slice(0, 4).map(([category, entries]) => (
+                <div key={category}>
+                  <p className="mb-1 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{category}</p>
+                  <TagList tags={entries.slice(0, 8).map((skill) => skill.name)} />
+                </div>
+              ))}
+              {!enabledSkills.length ? <p className="text-sm text-slate-600">No enabled skills saved.</p> : null}
+            </div>
+          </div>
+
+          <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-4">
+            <button className="button justify-start" type="button" onClick={() => onOpenTab("sensitive")}>
+              <Lock size={15} aria-hidden="true" />
+              Sensitive answers
+            </button>
+            <button className="button justify-start" type="button" onClick={() => onOpenTab("stories")}>
+              <BookOpenCheck size={15} aria-hidden="true" />
+              Stories and answers
+            </button>
+          </div>
+        </aside>
+      </div>
+    </PageSection>
+  );
 }
 
 function PreferencesPanel({
@@ -487,9 +705,9 @@ export function CandidateBrainPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Application memory"
-        title="Candidate Brain"
-        description="Manage reusable facts, preferences, sensitive answers, stories, and approved responses without mixing review-critical data into ordinary profile edits."
+        eyebrow="Profile source"
+        title="My Profile Data"
+        description="The saved profile, evidence, skills, stories, and answers CareerCompiler can reuse for resumes and applications."
         meta={
           <>
             <Badge tone="emerald" icon={ShieldCheck}>{verifiedClaims} verified claims</Badge>
@@ -504,7 +722,7 @@ export function CandidateBrainPage() {
             value={activeTab}
             onChange={switchTab}
             tabs={[
-              { id: "overview", label: "Overview" },
+              { id: "overview", label: "Resume data" },
               { id: "facts", label: "Facts", count: claimData.length },
               { id: "preferences", label: "Preferences" },
               { id: "sensitive", label: "Sensitive answers", count: sensitiveData.length },
@@ -512,13 +730,24 @@ export function CandidateBrainPage() {
               { id: "answers", label: "Approved answers", count: answerData.length },
             ]}
           />
-          <div className="w-full sm:w-80">
-            <SearchInput value={profileSearch} onChange={setProfileSearch} placeholder="Search Candidate Brain" />
-          </div>
+          {activeTab === "overview" ? null : (
+            <div className="w-full sm:w-80">
+              <SearchInput value={profileSearch} onChange={setProfileSearch} placeholder="Search profile data" />
+            </div>
+          )}
         </div>
 
         {activeTab === "overview" ? (
           <>
+            <ResumeSourceOverview
+              profile={profileData ?? null}
+              items={itemData}
+              facts={factData}
+              skills={skillData}
+              preferences={preferenceData}
+              onOpenTab={switchTab}
+            />
+
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <StatCard label="Profile completeness" value={pct(completeness.score)} detail="Contact, evidence, preferences, and reusable stories" icon={ShieldCheck} tone={completeness.needs.length ? "amber" : "emerald"} />
               <StatCard label="Career items" value={itemData.length} detail={`${factData.length} source-backed facts`} icon={FileText} />
@@ -574,7 +803,32 @@ export function CandidateBrainPage() {
               />
             </PageSection>
 
-            <SensitiveVault answers={sensitiveData} onSave={(answer) => saveSensitive.mutate(answer)} />
+            <PageSection
+              title="Application answer memory"
+              description="Sensitive answers, stories, and approved responses stay separate from ordinary resume evidence."
+              actions={
+                <>
+                  <button className="button" type="button" onClick={() => switchTab("sensitive")}>
+                    <Lock size={15} aria-hidden="true" />
+                    Sensitive answers
+                  </button>
+                  <button className="button" type="button" onClick={() => switchTab("stories")}>
+                    <BookOpenCheck size={15} aria-hidden="true" />
+                    Stories
+                  </button>
+                  <button className="button" type="button" onClick={() => switchTab("answers")}>
+                    <FileText size={15} aria-hidden="true" />
+                    Approved answers
+                  </button>
+                </>
+              }
+            >
+              <div className="grid gap-3 md:grid-cols-3">
+                <StatCard label="Locked sensitive answers" value={lockedSensitiveCount} detail="Reusable only after confirmation" icon={Lock} tone={lockedSensitiveCount ? "emerald" : "amber"} />
+                <StatCard label="Approved stories" value={storyData.filter((story) => story.approved).length} detail="Behavioral and fit answers" icon={BookOpenCheck} tone="blue" />
+                <StatCard label="Reusable answers" value={answerData.filter((answer) => !answer.doNotReuse).length} detail="Saved application responses" icon={FileText} />
+              </div>
+            </PageSection>
           </>
         ) : null}
 

@@ -38,11 +38,21 @@ describe("main tailoring workflow", () => {
     await user.click(screen.getByRole("button", { name: /save job and score evidence/i }));
     expect(JSON.parse(localStorage.getItem("careercompiler-dev") ?? "{}").jobs).toHaveLength(1);
     expect(await screen.findByText(/tailoring controls/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /generate tailored resume/i }));
+    expect(screen.getByRole("button", { name: /create tailored variant/i })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /create starter master resume/i }));
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem("careercompiler-dev") ?? "{}");
+      expect(stored.resumes.some((resume: { kind?: string }) => resume.kind === "master")).toBe(true);
+    });
+    await user.click(screen.getByRole("button", { name: /confirm base resume/i }));
+    await user.click(screen.getByRole("button", { name: /create tailored variant/i }));
 
     await waitFor(() => expect(screen.getByText(/generation review/i)).toBeInTheDocument());
     expect(screen.getAllByText(/exact source facts/i).length).toBeGreaterThan(0);
     expect(localStorage.getItem("careercompiler-resume-draft-v3")).toContain("resume");
+    const stored = JSON.parse(localStorage.getItem("careercompiler-dev") ?? "{}");
+    const tailored = stored.resumes.find((item: { kind?: string; parentResumeVersionId?: string; baseResumeVersionId?: string }) => item.kind === "tailored" && item.parentResumeVersionId);
+    expect(tailored?.baseResumeVersionId).toBe(tailored?.parentResumeVersionId);
 
     await user.click(screen.getByRole("button", { name: /accept all/i }));
     expect(screen.getByRole("button", { name: /export pdf/i })).toBeDisabled();

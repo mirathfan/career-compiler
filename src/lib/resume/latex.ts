@@ -36,6 +36,17 @@ function careerSection(section: ResumeCareerItemSection, settings: ResumeTemplat
   const organization = section.organization
     ? ` {\\color{ResumeMuted}| ${escapeLatex(section.organization)}}`
     : "";
+  const links = [
+    section.repositoryUrl ? contactValue(section.repositoryUrl, "GitHub", settings.urlDisplay) : "",
+    section.url ? contactValue(section.url, "Live", settings.urlDisplay) : "",
+  ].filter(Boolean);
+  const detailText = [
+    section.technologies?.length ? `{\\itshape ${escapeLatex(section.technologies.join(", "))}}` : "",
+    ...links,
+  ].filter(Boolean);
+  const details = detailText.length
+    ? `{\\footnotesize ${detailText.join(" {\\color{ResumeMuted}|} ")}}\\par\n`
+    : "";
   const date = formatDateRange(section.startDate, section.endDate, section.isCurrent);
   const dateSeparator = settings.dateAlignment === "right" ? "\\hfill" : " {\\color{ResumeMuted}|}";
   const dateNode = date
@@ -45,12 +56,11 @@ function careerSection(section: ResumeCareerItemSection, settings: ResumeTemplat
     .filter((bullet) => bullet.included)
     .map((bullet) => `  \\item ${escapeLatex(bullet.text)}`)
     .join("\n");
-  return `\\begin{samepage}
-{\\bfseries ${escapeLatex(section.title)}}${organization}${dateNode}\\par
+  return `{\\bfseries ${escapeLatex(section.title)}}${organization}${dateNode}\\par
+${details}
 \\begin{resumeitems}
 ${bullets}
-\\end{resumeitems}
-\\end{samepage}`;
+\\end{resumeitems}`;
 }
 
 function sectionBody(
@@ -79,7 +89,7 @@ function sectionBody(
     return `\\resumesection{Projects}\n${resume.projects.map((item) => careerSection(item, settings)).join("\n")}`;
   }
   if (section === "skills" && resume.skills.length > 0) {
-    const skills = escapeLatex(resume.skills.join(" | "));
+    const skills = resume.skills.map(escapeLatex).join("~{\\color{ResumeMuted}|}\\allowbreak{} ");
     return `\\resumesection{Skills}\n${resume.layout.condensedSkills ? "{\\small " : ""}${skills}${resume.layout.condensedSkills ? "}" : ""}\\par`;
   }
   return "";

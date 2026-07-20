@@ -105,5 +105,33 @@ export function semanticResumeDiff(before: TailoredResume, after: TailoredResume
     });
   }
 
+  if (before.summary.join("\n") !== after.summary.join("\n")) {
+    entries.push({
+      category: "summary_changed",
+      section: "summary",
+      careerItemId: "",
+      sourceFactIds: [],
+      before: before.summary.join(" "),
+      after: after.summary.join(" "),
+      explanation: after.summary.length
+        ? "Changed the summary content."
+        : "Removed the summary to reduce visual density or page overflow.",
+    });
+  }
+
+  const beforeLayout = JSON.stringify(before.layout);
+  const afterLayout = JSON.stringify(after.layout);
+  if (beforeLayout !== afterLayout) {
+    entries.push({
+      category: "layout_changed",
+      section: "layout",
+      careerItemId: "",
+      sourceFactIds: [],
+      before: `font ${before.layout.bodyFontSize}, spacing ${before.layout.spacingScale}, condensed skills ${before.layout.condensedSkills}`,
+      after: `font ${after.layout.bodyFontSize}, spacing ${after.layout.spacingScale}, condensed skills ${after.layout.condensedSkills}`,
+      explanation: "Adjusted approved template layout settings to improve one-page fit and readability.",
+    });
+  }
+
   return entries;
 }

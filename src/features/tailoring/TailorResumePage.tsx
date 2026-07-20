@@ -2,12 +2,16 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowDown,
   ArrowUp,
+  BrainCircuit,
   Check,
   ClipboardPaste,
+  Database,
+  Eye,
   FileDown,
   Lock,
   LockOpen,
@@ -23,7 +27,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { PageHeader } from "../../components/PageHeader";
 import { InlineError, LoadingState } from "../../components/States";
 import { TagList } from "../../components/TagList";
-import { Badge, PageSection, ProgressChecklist } from "../../components/ui";
+import { AlertBanner, Badge, PageSection, ProgressChecklist, StatCard } from "../../components/ui";
 import { JobInputSchema } from "../../schemas/forms";
 import { buildResumeGenerationRequest } from "../../lib/ai/generationRequest";
 import {
@@ -38,6 +42,8 @@ import { defaultSettings } from "../../lib/database/seed";
 import { scoreCareerFacts, splitEvidence } from "../../lib/tailoring/evidence";
 import { controlsForRoleProfile, detectRoleProfile, ROLE_PROFILES } from "../../lib/tailoring/roleProfiles";
 import { createResumePlanFromRequest } from "../../lib/tailoring/plan";
+import { createControlledResumeVariantFromBase } from "../../lib/tailoring/baseVariant";
+import { createMasterResumeFromProfile } from "../../lib/tailoring/masterResume";
 import {
   compactResumeWithGroundedShortening,
   estimateResumePageCount,
@@ -46,6 +52,7 @@ import { semanticResumeDiff } from "../../lib/resume/diff";
 import { defaultResumeFilename } from "../../lib/resume/filename";
 import { calculateResumeQuality } from "../../lib/resume/quality";
 import {
+  allResumeBullets,
   hasBlockingValidationErrors,
   missingRequiredContactFields,
   validateResumeClaims,
@@ -60,6 +67,7 @@ import type {
   EvidenceScore,
   Job,
   JobAnalysis,
+  Profile,
   ResumeGenerationRequest,
   ResumePlan,
   ResumeQualityCheck,
@@ -68,7 +76,7 @@ import type {
   TailoringControls,
   ValidationIssue,
 } from "../../types/domain";
-import { createId, nowIso, parseCsv } from "../../lib/utils";
+import { createId, nowIso, parseCsv, unique } from "../../lib/utils";
 import { sampleJob } from "./sampleJob";
 
 const ResumePreview = lazy(() =>
@@ -79,18 +87,23 @@ type JobFormValues = typeof sampleJob;
 const emptyFacts: CareerFact[] = [];
 const emptyItems: CareerItem[] = [];
 const emptySkills: Skill[] = [];
+const emptyResumes: ResumeVersion[] = [];
 
 function StepIndicator({ step }: { step: number }) {
-  const stages = ["Job", "Base", "Evidence", "Generate", "Review", "Validate", "Preview", "Export"];
+  const stages = [
+    { label: "Job", step: 1 },
+    { label: "Analyze", step: 2 },
+    { label: "Base + Evidence", step: 3 },
+    { label: "Review + Export", step: 4 },
+  ];
   return (
     <div className="flex max-w-full flex-wrap gap-2">
-      {stages.map((label, index) => {
-        const stageStep = index < 2 ? 1 : index < 3 ? 3 : index < 4 ? 3 : 4;
-        const complete = step > stageStep;
-        const active = step === stageStep;
+      {stages.map((stage, index) => {
+        const complete = step > stage.step;
+        const active = step === stage.step;
         return (
         <div
-          key={label}
+          key={stage.label}
           className={[
             "rounded border px-3 py-1 text-xs font-semibold",
             active
@@ -100,7 +113,7 @@ function StepIndicator({ step }: { step: number }) {
                 : "border-slate-200 bg-white text-slate-500",
           ].join(" ")}
         >
-          {index + 1}. {label}
+          {index + 1}. {stage.label}
         </div>
       );})}
     </div>
@@ -301,6 +314,256 @@ function QualityPanel({ checks }: { checks: ResumeQualityCheck[] }) {
   );
 }
 
+function normalizedTerms(values: string[]) {
+  return new Set(values.map((value) => value.toLowerCase().trim()).filter(Boolean));
+}
+
+function overlapScore(left: string[], right: string[]) {
+  const leftTerms = normalizedTerms(left);
+  const rightTerms = normalizedTerms(right);
+  if (!leftTerms.size || !rightTerms.size) return 0;
+  const hits = [...leftTerms].filter((term) => rightTerms.has(term)).length;
+  return hits / Math.max(leftTerms.size, rightTerms.size);
+}
+
+function resumeTerms(resume: ResumeVersion) {
+  const bullets = allResumeBullets(resume.contentJson).flatMap(({ bullet }) => [
+    bullet.text,
+    ...bullet.keywordsAddressed,
+  ]);
+  return unique([
+    resume.name,
+    resume.layoutProfileId,
+    ...resume.contentJson.skills,
+    ...bullets,
+  ]);
+}
+
+function recommendBaseResume(resumes: ResumeVersion[], analysis: JobAnalysis | null) {
+  if (!resumes.length) return null;
+  const masters = resumes.filter((resume) => resume.kind === "master");
+  if (!analysis) {
+    return {
+      resume: masters[0] ?? resumes[0],
+      reason: masters[0] ? "Latest Master Resume" : "Latest saved resume",
+    };
+  }
+  const jobTerms = unique([
+    ...analysis.requiredSkills,
+    ...analysis.preferredSkills,
+    ...analysis.roleCategories,
+    ...analysis.domainKeywords,
+  ]);
+  const scored = resumes
+    .map((resume) => ({
+      resume,
+      score: overlapScore(jobTerms, resumeTerms(resume)),
+    }))
+    .sort((left, right) => right.score - left.score);
+  const similar = scored.find((entry) => entry.resume.kind !== "master" && entry.score >= 0.18);
+  if (similar) {
+    return {
+      resume: similar.resume,
+      reason: `Similar saved resume (${Math.round(similar.score * 100)}% overlap)`,
+    };
+  }
+  if (masters[0]) {
+    return { resume: masters[0], reason: "Master Resume" };
+  }
+  const fallback = scored[0];
+  return {
+    resume: fallback.resume,
+    reason: fallback.score > 0
+      ? `Closest saved resume (${Math.round(fallback.score * 100)}% overlap)`
+      : "Latest saved resume",
+  };
+}
+
+function baseResumeFactIds(base: ResumeVersion | null) {
+  return base
+    ? unique(allResumeBullets(base.contentJson).flatMap(({ bullet }) => bullet.sourceFactIds))
+    : [];
+}
+
+function baseResumeCareerItemIds(base: ResumeVersion | null) {
+  return base
+    ? unique([...base.contentJson.projects, ...base.contentJson.experience].map((section) => section.careerItemId))
+    : [];
+}
+
+function BaseResumePanel({
+  resumes,
+  selectedBaseId,
+  recommended,
+  confirmed,
+  creatingMaster,
+  onSelect,
+  onConfirm,
+  onCreateMaster,
+}: {
+  resumes: ResumeVersion[];
+  selectedBaseId: string;
+  recommended: ReturnType<typeof recommendBaseResume>;
+  confirmed: boolean;
+  creatingMaster: boolean;
+  onSelect: (id: string) => void;
+  onConfirm: () => void;
+  onCreateMaster: () => void;
+}) {
+  const selected = resumes.find((resume) => resume.id === selectedBaseId) ?? null;
+  const includedBullets = selected ? allResumeBullets(selected.contentJson).filter(({ bullet }) => bullet.included).length : 0;
+  const sectionCount = selected ? selected.contentJson.projects.length + selected.contentJson.experience.length : 0;
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-lg font-semibold text-slate-950">Base resume</h3>
+        <Badge tone={confirmed ? "emerald" : "amber"}>{confirmed ? "confirmed" : "needs confirmation"}</Badge>
+      </div>
+      {resumes.length ? (
+        <>
+          <p className="mt-2 text-sm leading-6 text-slate-600">
+            Tailoring starts by duplicating this resume. The original stays unchanged.
+          </p>
+          <label className="mt-3 block text-sm font-semibold text-slate-700">
+            Source document
+            <select
+              className="field mt-1"
+              value={selectedBaseId}
+              onChange={(event) => onSelect(event.target.value)}
+            >
+              {resumes.map((resume) => (
+                <option key={resume.id} value={resume.id}>
+                  {resume.kind === "master" ? "Master: " : resume.kind === "imported" ? "Imported: " : "Saved: "}
+                  {resume.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {recommended ? (
+            <p className="mt-2 text-xs font-semibold text-blue-700">
+              Recommended: {recommended.resume.name} - {recommended.reason}
+            </p>
+          ) : null}
+          {selected ? (
+            <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                <p className="font-semibold uppercase text-slate-500">Kind</p>
+                <p className="mt-1 text-slate-800">{selected.kind}</p>
+              </div>
+              <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                <p className="font-semibold uppercase text-slate-500">Sections</p>
+                <p className="mt-1 text-slate-800">{sectionCount}</p>
+              </div>
+              <div className="rounded border border-slate-200 bg-slate-50 p-2">
+                <p className="font-semibold uppercase text-slate-500">Bullets</p>
+                <p className="mt-1 text-slate-800">{includedBullets}</p>
+              </div>
+            </div>
+          ) : null}
+          <button className="button button-primary mt-3 w-full" type="button" onClick={onConfirm} disabled={!selected}>
+            Confirm base resume
+          </button>
+        </>
+      ) : (
+        <>
+          <AlertBanner tone="amber" title="No base resume exists">
+            Default tailoring is blocked until a Master Resume or saved resume exists.
+          </AlertBanner>
+          <button
+            className="button button-primary mt-3 w-full"
+            type="button"
+            onClick={onCreateMaster}
+            disabled={creatingMaster}
+          >
+            {creatingMaster ? "Creating..." : "Create starter Master Resume"}
+          </button>
+          <Link className="button mt-2 w-full justify-center" to="/career-memory?intake=1">
+            Import profile data
+          </Link>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ResumeSourcePanel({
+  profile,
+  items,
+  facts,
+  skills,
+  latestResume,
+  missingContactFields,
+}: {
+  profile: Profile | null;
+  items: CareerItem[];
+  facts: CareerFact[];
+  skills: Skill[];
+  latestResume: ResumeVersion | null;
+  missingContactFields: string[];
+}) {
+  const enabledItems = items.filter((item) => item.enabled);
+  const eligibleFacts = facts.filter((fact) => fact.enabled && fact.evidenceStatus !== "prohibited");
+  const enabledSkills = skills.filter((skill) => skill.enabled);
+  const location = [profile?.city, profile?.region].filter(Boolean).join(", ");
+  const headerReady = missingContactFields.length === 0;
+
+  return (
+    <PageSection
+      title="Resume source"
+      description="Profile data validates facts and contact fields; the actual tailored document starts from the confirmed base resume."
+      actions={
+        <Link className="button" to="/candidate-brain">
+          <BrainCircuit size={15} aria-hidden="true" />
+          My Profile Data
+        </Link>
+      }
+    >
+      {missingContactFields.length ? (
+        <AlertBanner tone="amber" title="Resume export needs profile fields">
+          Missing: {missingContactFields.join(", ")}.
+        </AlertBanner>
+      ) : null}
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            label="Profile header"
+            value={headerReady ? "Ready" : "Missing"}
+            detail={profile?.fullName ? [profile.fullName, profile.headline, location].filter(Boolean).join(" | ") : "Required before PDF export"}
+            icon={BrainCircuit}
+            tone={headerReady ? "emerald" : "amber"}
+          />
+          <StatCard label="Career records" value={enabledItems.length} detail="Enabled projects, work, and education" icon={FileDown} />
+          <StatCard label="Eligible facts" value={eligibleFacts.length} detail="Enabled and not prohibited" icon={Database} tone={eligibleFacts.length ? "emerald" : "amber"} />
+          <StatCard label="Skills" value={enabledSkills.length} detail="Available for keyword matching" icon={Check} />
+        </div>
+        <div className="rounded-md border border-slate-200 bg-white p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-semibold text-slate-950">Resume preview</p>
+            <Badge tone={latestResume ? "emerald" : "amber"} icon={Eye}>
+              {latestResume ? "latest saved" : "no draft"}
+            </Badge>
+          </div>
+          {latestResume ? (
+            <>
+              <p className="mt-3 text-sm font-semibold text-slate-800">{latestResume.name}</p>
+              <p className="mt-1 text-xs text-slate-500">
+                {latestResume.status} | {new Date(latestResume.createdAt).toLocaleString()}
+              </p>
+              <Link className="button mt-3" to="/library">
+                Open library
+              </Link>
+            </>
+          ) : (
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              No saved resume draft yet. Create or import a Master Resume before default tailoring.
+            </p>
+          )}
+        </div>
+      </div>
+    </PageSection>
+  );
+}
+
 export function TailorResumePage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
@@ -312,6 +575,9 @@ export function TailorResumePage() {
   const [applicationSaved, setApplicationSaved] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
   const [savedResume, setSavedResume] = useState<ResumeVersion | null>(null);
+  const [baseResumeId, setBaseResumeId] = useState("");
+  const [baseConfirmed, setBaseConfirmed] = useState(false);
+  const [creatingMaster, setCreatingMaster] = useState(false);
   const [generationRequest, setGenerationRequest] = useState<ResumeGenerationRequest | null>(null);
   const [generationPlan, setGenerationPlan] = useState<ResumePlan | null>(null);
   const [calls, setCalls] = useState<AIRequestMetadata[]>([]);
@@ -354,6 +620,7 @@ export function TailorResumePage() {
   const factsQuery = useQuery({ queryKey: ["career-facts"], queryFn: () => repository.listCareerFacts() });
   const skillsQuery = useQuery({ queryKey: ["skills"], queryFn: () => repository.listSkills() });
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => repository.getSettings() });
+  const resumeVersionsQuery = useQuery({ queryKey: ["resume-versions"], queryFn: () => repository.listResumeVersions() });
 
   useEffect(() => {
     if (settingsQuery.data && !controlsLoaded) {
@@ -398,6 +665,9 @@ export function TailorResumePage() {
       setJobPersisted(false);
       setApplicationSaved(false);
       setOverrides({});
+      setBaseConfirmed(false);
+      setBaseResumeId("");
+      setSavedResume(null);
       const detected = detectRoleProfile(nextAnalysis);
       setControls((current) => controlsForRoleProfile(detected, current));
       setCalls([metadata]);
@@ -414,6 +684,13 @@ export function TailorResumePage() {
   const skills = skillsQuery.data ?? emptySkills;
   const profile = profileQuery.data ?? null;
   const settings = settingsQuery.data;
+  const resumeVersions = resumeVersionsQuery.data ?? emptyResumes;
+  const latestResume = resumeVersions[0] ?? null;
+  const recommendedBase = useMemo(
+    () => recommendBaseResume(resumeVersions, analysis),
+    [analysis, resumeVersions],
+  );
+  const selectedBaseResume = resumeVersions.find((candidate) => candidate.id === baseResumeId) ?? null;
   const evidence = useMemo(
     () =>
       analysis
@@ -425,6 +702,13 @@ export function TailorResumePage() {
     [analysis, controls.roleProfileId, facts, items, overrides],
   );
   const selectedEvidence = evidence.filter((score) => score.selected && !controls.excludedFactIds.includes(score.fact.id));
+  const confirmedBaseResume = baseConfirmed ? selectedBaseResume : null;
+
+  useEffect(() => {
+    if (!analysis || baseResumeId || !recommendedBase) return;
+    setBaseResumeId(recommendedBase.resume.id);
+    setBaseConfirmed(false);
+  }, [analysis, baseResumeId, recommendedBase]);
   const validationIssues: ValidationIssue[] = resume && profile
     ? validateResumeClaims({ resume, facts, items, skills, profile, generationRequest: generationRequest ?? undefined })
     : [];
@@ -464,8 +748,8 @@ export function TailorResumePage() {
       warning: true,
     },
     {
-      label: "Generated bullets approved",
-      detail: hasUnapprovedIncludedBullets ? "Accept or reject each included bullet." : "Every included bullet has been reviewed.",
+      label: "Proposed edits approved",
+      detail: hasUnapprovedIncludedBullets ? "Accept or reject each proposed included bullet." : "Every proposed edit has been reviewed.",
       complete: !hasUnapprovedIncludedBullets,
       warning: true,
     },
@@ -488,22 +772,25 @@ export function TailorResumePage() {
     issues: ValidationIssue[],
     baseline: NonNullable<typeof deterministicBaseline>,
     metadata: NonNullable<typeof generationMetadata>,
+    baseResume: ResumeVersion,
   ) => {
     if (!job || !settings || !analysis) throw new Error("Job context is unavailable.");
     const saved = await repository.saveResumeVersion({
       jobId: job.id,
       name: `${job.company || analysis.inferredCompany} - ${job.roleTitle || analysis.inferredRoleTitle}`,
-      templateId: settings.defaultTemplateId,
+      kind: "tailored",
+      templateId: baseResume.templateId,
       contentJson: nextResume,
       validationJson: issues,
       status: "draft",
-      parentResumeVersionId: "",
+      parentResumeVersionId: baseResume.id,
+      baseResumeVersionId: baseResume.id,
       generationProvider: settings.aiProvider,
       generationModel: settings.modelName,
       promptVersion: PROMPT_VERSION,
       promptVersionsJson: PROMPT_VERSIONS,
       layoutProfileId: controls.roleProfileId,
-      templateSettingsJson: settings.templateSettings,
+      templateSettingsJson: baseResume.templateSettingsJson,
       generationMetadataJson: metadata,
       deterministicBaselineJson: baseline,
     });
@@ -525,16 +812,88 @@ export function TailorResumePage() {
     }
   };
 
+  const createStarterMaster = async () => {
+    if (!profile || !settings || !job || !jobPersisted) {
+      setError("Save the job and complete profile data before creating a starter Master Resume.");
+      return;
+    }
+    setCreatingMaster(true);
+    setError("");
+    try {
+      const master = createMasterResumeFromProfile({
+        profile,
+        items,
+        facts,
+        skills,
+        settings: settings.templateSettings,
+      });
+      if (!master.projects.length && !master.experience.length) {
+        throw new Error("Add or import project/work facts before creating a starter Master Resume.");
+      }
+      const issues = validateResumeClaims({ resume: master, facts, items, skills, profile });
+      const saved = await repository.saveResumeVersion({
+        jobId: job.id,
+        name: "Master Resume",
+        kind: "master",
+        templateId: settings.defaultTemplateId,
+        contentJson: master,
+        validationJson: issues,
+        status: hasBlockingValidationErrors(issues) ? "draft" : "approved",
+        lastExportPath: "",
+        parentResumeVersionId: "",
+        baseResumeVersionId: "",
+        generationProvider: "deterministic",
+        generationModel: "",
+        promptVersion: "starter-master-v1",
+        promptVersionsJson: PROMPT_VERSIONS,
+        layoutProfileId: controls.roleProfileId,
+        templateSettingsJson: settings.templateSettings,
+        generationMetadataJson: {
+          calls: [],
+          repairAttempted: false,
+          repairSucceeded: false,
+          deterministicFallbackUsed: true,
+          compactionLog: [],
+        },
+        deterministicBaselineJson: null,
+      });
+      setBaseResumeId(saved.id);
+      setBaseConfirmed(false);
+      await queryClient.invalidateQueries();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setCreatingMaster(false);
+    }
+  };
+
   const generateResume = async () => {
     if (!analysis || !profile || !job || !settings || !jobPersisted) {
       setError("Seed or complete the profile before generating a resume.");
       return;
     }
+    if (!confirmedBaseResume) {
+      setError("Confirm a base resume before tailoring. The default flow duplicates an existing resume first.");
+      return;
+    }
     setError("");
     setGenerating(true);
     try {
+      const requiredFactIds = unique([
+        ...controls.requiredFactIds,
+        ...baseResumeFactIds(confirmedBaseResume),
+      ]);
+      const lockedCareerItemIds = unique([
+        ...controls.lockedCareerItemIds,
+        ...baseResumeCareerItemIds(confirmedBaseResume),
+      ]);
+      const baseAwareControls: TailoringControls = {
+        ...controls,
+        requiredFactIds,
+        lockedCareerItemIds,
+      };
       const variants = await repository.listApprovedBulletVariants({
-        factIds: selectedEvidence.map((score) => score.fact.id),
+        factIds: unique([...selectedEvidence.map((score) => score.fact.id), ...requiredFactIds]),
         roleCategories: analysis.roleCategories,
       });
       const request = buildResumeGenerationRequest({
@@ -544,7 +903,7 @@ export function TailorResumePage() {
         items,
         evidence,
         skills,
-        controls,
+        controls: baseAwareControls,
         approvedVariants: variants,
       });
       setGenerationRequest(request);
@@ -556,12 +915,25 @@ export function TailorResumePage() {
       setGenerationPlan(generated.plan);
       setGenerationMetadata(generated.metadata);
       setCalls((current) => [...current, ...generated.metadata.calls]);
-      setReviewDraft(generated.resume, generated.deterministicBaseline);
+      const variant = createControlledResumeVariantFromBase({
+        base: confirmedBaseResume.contentJson,
+        proposed: generated.resume,
+      });
+      const issues = validateResumeClaims({
+        resume: variant.variant,
+        facts,
+        items,
+        skills,
+        profile,
+        generationRequest: request,
+      });
+      setReviewDraft(variant.variant, confirmedBaseResume.contentJson);
       await saveGeneratedVersion(
-        generated.resume,
-        generated.validationIssues,
-        generated.deterministicBaseline,
+        variant.variant,
+        issues,
+        confirmedBaseResume.contentJson,
         generated.metadata,
+        confirmedBaseResume,
       );
       setStep(4);
     } catch (caught) {
@@ -573,10 +945,21 @@ export function TailorResumePage() {
   };
 
   const activateFallback = async () => {
-    if (!generationRequest || !profile || !job || !settings) return;
+    if (!generationRequest || !profile || !job || !settings || !confirmedBaseResume) return;
     const plan = createResumePlanFromRequest(generationRequest);
     const fallback = deterministicFallback(generationRequest, plan);
-    const issues = validateResumeClaims({ resume: fallback, facts, items, skills, profile, generationRequest });
+    const variant = createControlledResumeVariantFromBase({
+      base: confirmedBaseResume.contentJson,
+      proposed: fallback,
+    });
+    const issues = validateResumeClaims({
+      resume: variant.variant,
+      facts,
+      items,
+      skills,
+      profile,
+      generationRequest,
+    });
     const metadata = {
       calls,
       repairAttempted: false,
@@ -586,8 +969,8 @@ export function TailorResumePage() {
     };
     setGenerationPlan(plan);
     setGenerationMetadata(metadata);
-    setReviewDraft(fallback, fallback);
-    await saveGeneratedVersion(fallback, issues, fallback, metadata);
+    setReviewDraft(variant.variant, confirmedBaseResume.contentJson);
+    await saveGeneratedVersion(variant.variant, issues, confirmedBaseResume.contentJson, metadata, confirmedBaseResume);
     setError("");
     setStep(4);
   };
@@ -672,7 +1055,15 @@ export function TailorResumePage() {
         if (!replacement) throw new Error("Regeneration did not return a grounded replacement bullet.");
         replaceBullet(bulletId, { ...replacement, rejected: false, approved: false });
       } else {
-        replaceSection(careerItemId, candidateSection);
+        const controlled = createControlledResumeVariantFromBase({
+          base: resume,
+          proposed: result.data,
+        }).variant;
+        const controlledSection = [...controlled.projects, ...controlled.experience].find(
+          (section) => section.careerItemId === careerItemId,
+        );
+        if (!controlledSection) throw new Error("Regeneration did not return a controlled section update.");
+        replaceSection(careerItemId, controlledSection);
       }
     } catch (caught) {
       if (caught instanceof AIProviderError) setCalls((current) => [...current, caught.metadata]);
@@ -762,7 +1153,14 @@ export function TailorResumePage() {
     }
   };
 
-  if (profileQuery.isLoading || itemsQuery.isLoading || factsQuery.isLoading || skillsQuery.isLoading || settingsQuery.isLoading) {
+  if (
+    profileQuery.isLoading ||
+    itemsQuery.isLoading ||
+    factsQuery.isLoading ||
+    skillsQuery.isLoading ||
+    settingsQuery.isLoading ||
+    resumeVersionsQuery.isLoading
+  ) {
     return <LoadingState label="Loading tailoring workspace..." />;
   }
   if (profileQuery.isError) throw profileQuery.error;
@@ -770,6 +1168,7 @@ export function TailorResumePage() {
   if (factsQuery.isError) throw factsQuery.error;
   if (skillsQuery.isError) throw skillsQuery.error;
   if (settingsQuery.isError) throw settingsQuery.error;
+  if (resumeVersionsQuery.isError) throw resumeVersionsQuery.error;
 
   return (
     <div>
@@ -794,11 +1193,22 @@ export function TailorResumePage() {
               <div className="flex flex-wrap gap-2">
                 <button className="button" type="button" onClick={() => void generateResume()}><RefreshCcw size={15} />Retry</button>
                 <button className="button" type="button" onClick={async () => { if (settings) { await repository.saveSettings({ ...settings, aiProvider: "mock" }); await settingsQuery.refetch(); setError(""); } }}>Switch to mock mode</button>
-                <button className="button" type="button" onClick={() => void activateFallback()}>Use deterministic fallback</button>
+                <button className="button" type="button" onClick={() => void activateFallback()} disabled={!confirmedBaseResume}>Use deterministic base edits</button>
                 <button className="button" type="button" onClick={() => setStep(3)}>Return to evidence selection</button>
               </div>
             ) : null}
           </div>
+        ) : null}
+
+        {step < 4 ? (
+          <ResumeSourcePanel
+            profile={profile}
+            items={items}
+            facts={facts}
+            skills={skills}
+            latestResume={latestResume}
+            missingContactFields={missingContactFields}
+          />
         ) : null}
 
         {step === 1 ? (
@@ -878,22 +1288,45 @@ export function TailorResumePage() {
         {step === 3 && analysis ? (
           <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
             <section><EvidenceTable evidence={evidence} overrides={overrides} controls={controls} onToggle={(factId, included) => setOverrides((current) => ({ ...current, [factId]: included }))} onControls={setControls} /></section>
-            <aside className="panel h-fit p-5">
-              <h3 className="text-lg font-semibold text-slate-950">Tailoring controls</h3>
-              <div className="mt-4"><ControlsPanel controls={controls} onChange={setControls} /></div>
-              <p className="mt-4 text-sm text-slate-600">{selectedEvidence.length} facts selected from {evidence.length} ranked facts.</p>
-              <button className="button mt-3 w-full" type="button" onClick={() => setOverrides({})}>
-                Use recommended evidence
-              </button>
-              <button className="button button-primary mt-5 w-full" type="button" onClick={() => void generateResume()} disabled={selectedEvidence.length === 0 || generating}>
-                <Sparkles size={15} />{generating ? "Generating..." : "Generate tailored resume"}
-              </button>
+            <aside className="h-fit space-y-4">
+              <BaseResumePanel
+                resumes={resumeVersions}
+                selectedBaseId={baseResumeId}
+                recommended={recommendedBase}
+                confirmed={baseConfirmed}
+                creatingMaster={creatingMaster}
+                onSelect={(id) => {
+                  setBaseResumeId(id);
+                  setBaseConfirmed(false);
+                }}
+                onConfirm={() => {
+                  if (selectedBaseResume) setBaseConfirmed(true);
+                }}
+                onCreateMaster={() => void createStarterMaster()}
+              />
+              <div className="panel p-5">
+                <h3 className="text-lg font-semibold text-slate-950">Tailoring controls</h3>
+                <div className="mt-4"><ControlsPanel controls={controls} onChange={setControls} /></div>
+                <p className="mt-4 text-sm text-slate-600">{selectedEvidence.length} facts selected from {evidence.length} ranked facts.</p>
+                <button className="button mt-3 w-full" type="button" onClick={() => setOverrides({})}>
+                  Use recommended evidence
+                </button>
+                <button
+                  className="button button-primary mt-5 w-full"
+                  type="button"
+                  onClick={() => void generateResume()}
+                  disabled={selectedEvidence.length === 0 || generating || !confirmedBaseResume}
+                  title={!confirmedBaseResume ? "Confirm a base resume before generating." : undefined}
+                >
+                  <Sparkles size={15} />{generating ? "Generating..." : "Create tailored variant"}
+                </button>
+              </div>
             </aside>
           </div>
         ) : null}
 
         {step === 4 && resume && profile && analysis ? (
-          <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_620px]">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,620px)]">
             <section className="space-y-4">
               <div className="panel flex flex-wrap items-center gap-2 p-4">
                 <div className="mr-auto">
@@ -941,7 +1374,7 @@ export function TailorResumePage() {
               <UsagePanel calls={calls} />
 
               <div className="panel p-4">
-                <h4 className="font-semibold text-slate-950">Semantic diff from deterministic draft</h4>
+                <h4 className="font-semibold text-slate-950">Before-and-after diff from base resume</h4>
                 <p className="mt-1 text-sm text-slate-500">{diff.length} categorized changes</p>
                 <div className="mt-3 max-h-72 space-y-3 overflow-auto">
                   {diff.map((entry, index) => (
@@ -951,7 +1384,7 @@ export function TailorResumePage() {
                       {entry.after ? <p className="mt-1 text-emerald-700">After: {entry.after}</p> : null}
                     </div>
                   ))}
-                  {!diff.length ? <p className="text-sm text-slate-500">No semantic changes from the deterministic draft.</p> : null}
+                  {!diff.length ? <p className="text-sm text-slate-500">No semantic changes from the selected base resume.</p> : null}
                 </div>
                 {generationPlan?.omittedItems.length ? (
                   <div className="mt-4 border-t border-slate-200 pt-3 text-sm text-slate-600">
@@ -980,7 +1413,7 @@ export function TailorResumePage() {
                             <button className="button" type="button" onClick={() => acceptBullet(bullet.id)}><Check size={14} />Accept</button>
                             <button className="button" type="button" onClick={() => rejectBullet(bullet.id)}><X size={14} />Reject</button>
                             <button className="button" type="button" onClick={() => void regenerateContent(section.careerItemId, bullet.id)}><RefreshCcw size={14} />Regenerate</button>
-                            <button className="button" type="button" onClick={() => restoreDeterministicBullet(bullet.id)}><RotateCcw size={14} />Fallback</button>
+                            <button className="button" type="button" onClick={() => restoreDeterministicBullet(bullet.id)}><RotateCcw size={14} />Base</button>
                             <button className="button" type="button" onClick={() => toggleBulletLock(bullet.id)}>{bullet.locked ? <Lock size={14} /> : <LockOpen size={14} />}</button>
                             <button className="button" type="button" onClick={async () => {
                               await repository.saveApprovedBulletVariant({
@@ -1014,7 +1447,14 @@ export function TailorResumePage() {
                 </div>
               ))}
             </section>
-            <aside className="space-y-4 2xl:sticky 2xl:top-0 2xl:h-screen 2xl:overflow-auto">
+            <aside className="order-first space-y-4 xl:order-none xl:sticky xl:top-0 xl:max-h-screen xl:overflow-auto">
+              <PageSection title="Resume preview" description="This is the current draft that will be saved or exported after review.">
+                <div className="overflow-auto bg-slate-100 p-3">
+                  <Suspense fallback={<LoadingState label="Loading resume preview..." />}>
+                    <ResumePreview resume={resume} validationIssues={visibleValidationIssues} pageCount={pageCount} />
+                  </Suspense>
+                </div>
+              </PageSection>
               <PageSection title="Export readiness" description="Export remains disabled until every critical check passes.">
                 <ProgressChecklist items={exportReadiness} />
                 {exportBlockReason ? (
@@ -1023,11 +1463,6 @@ export function TailorResumePage() {
                   </p>
                 ) : null}
               </PageSection>
-              <div className="panel bg-slate-100 p-4">
-              <Suspense fallback={<LoadingState label="Loading resume preview..." />}>
-                <ResumePreview resume={resume} validationIssues={visibleValidationIssues} pageCount={pageCount} />
-              </Suspense>
-              </div>
               {resume.compactionActions.length ? (
                 <div className="mt-4 rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
                   <p className="font-semibold text-slate-800">Compaction log</p>

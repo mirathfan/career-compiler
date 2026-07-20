@@ -23,7 +23,9 @@ import type {
   Profile,
   ResumeArchive,
   ResumeFavorite,
+  ResumeImprovementRun,
   ResumeRecommendation,
+  ResumeReview,
   ResumeVersion,
   SavedApplicationAnswer,
   SearchDiagnostics,
@@ -43,6 +45,7 @@ import {
   normalizeTailoredResume,
   normalizeValidationIssues,
 } from "../resume/normalize";
+import { normalizeResumeDocument, resumeDocumentFromTailoredResume } from "../resume/document";
 import {
   applyCareerImportToState,
 } from "./careerImportPersistence";
@@ -72,6 +75,8 @@ interface MemoryState {
   careerCopilotThreads: CareerCopilotThread[];
   careerCopilotMessages: CareerCopilotMessage[];
   resumeRecommendations: ResumeRecommendation[];
+  resumeReviews: ResumeReview[];
+  resumeImprovementRuns: ResumeImprovementRun[];
   resumeFavorites: ResumeFavorite[];
   resumeArchives: ResumeArchive[];
   savedApplicationAnswers: SavedApplicationAnswer[];
@@ -113,6 +118,8 @@ function emptyState(): MemoryState {
     careerCopilotThreads: [],
     careerCopilotMessages: [],
     resumeRecommendations: [],
+    resumeReviews: [],
+    resumeImprovementRuns: [],
     resumeFavorites: [],
     resumeArchives: [],
     savedApplicationAnswers: [],
@@ -223,6 +230,8 @@ export class MemoryRepository implements AppRepository {
         careerCopilotThreads: stored.careerCopilotThreads ?? [],
         careerCopilotMessages: stored.careerCopilotMessages ?? [],
         resumeRecommendations: stored.resumeRecommendations ?? [],
+        resumeReviews: stored.resumeReviews ?? [],
+        resumeImprovementRuns: stored.resumeImprovementRuns ?? [],
         resumeFavorites: stored.resumeFavorites ?? [],
         resumeArchives: stored.resumeArchives ?? [],
         savedApplicationAnswers: stored.savedApplicationAnswers ?? [],
@@ -262,8 +271,10 @@ export class MemoryRepository implements AppRepository {
         resumes: (stored.resumes ?? []).map((resume) => ({
           ...resume,
           contentJson: normalizeTailoredResume(resume.contentJson),
+          kind: resume.kind ?? "tailored",
           validationJson: normalizeValidationIssues(resume.validationJson),
           parentResumeVersionId: resume.parentResumeVersionId ?? "",
+          baseResumeVersionId: resume.baseResumeVersionId ?? resume.parentResumeVersionId ?? "",
           generationProvider: resume.generationProvider ?? "deterministic",
           generationModel: resume.generationModel ?? "",
           promptVersion: resume.promptVersion ?? "",
@@ -274,6 +285,20 @@ export class MemoryRepository implements AppRepository {
           deterministicBaselineJson: resume.deterministicBaselineJson
             ? normalizeTailoredResume(resume.deterministicBaselineJson)
             : null,
+          resumeDocumentJson: normalizeResumeDocument(
+            resume.resumeDocumentJson,
+            resumeDocumentFromTailoredResume({
+              resume: normalizeTailoredResume(resume.contentJson),
+              id: resume.id,
+              name: resume.name ?? "Resume",
+              kind: resume.kind ?? "tailored",
+              parentResumeId: resume.parentResumeVersionId || undefined,
+              sourceJobId: resume.jobId || undefined,
+              templateId: resume.templateId ?? defaultSettings.defaultTemplateId,
+              createdAt: resume.createdAt ?? "",
+              updatedAt: resume.updatedAt ?? "",
+            }),
+          ),
         })),
       };
       return;
@@ -701,16 +726,39 @@ export class MemoryRepository implements AppRepository {
     const existing = resume.id
       ? this.state.resumes.find((item) => item.id === resume.id)
       : undefined;
+    const savedId = existing?.id ?? resume.id ?? createId("resume");
+    const savedName = resume.name ?? existing?.name ?? "Tailored resume";
+    const savedKind = resume.kind ?? existing?.kind ?? "tailored";
+    const parentResumeVersionId = resume.parentResumeVersionId ?? existing?.parentResumeVersionId ?? "";
+    const baseResumeVersionId =
+      resume.baseResumeVersionId ?? existing?.baseResumeVersionId ?? parentResumeVersionId;
+    const templateId = resume.templateId ?? existing?.templateId ?? defaultSettings.defaultTemplateId;
     const saved: ResumeVersion = {
-      id: existing?.id ?? resume.id ?? createId("resume"),
+      id: savedId,
       jobId: resume.jobId,
-      name: resume.name ?? existing?.name ?? "Tailored resume",
-      templateId: resume.templateId ?? existing?.templateId ?? defaultSettings.defaultTemplateId,
+      name: savedName,
+      kind: savedKind,
+      templateId,
       contentJson: resume.contentJson,
+      resumeDocumentJson: normalizeResumeDocument(
+        resume.resumeDocumentJson,
+        resumeDocumentFromTailoredResume({
+          resume: resume.contentJson,
+          id: savedId,
+          name: savedName,
+          kind: savedKind,
+          parentResumeId: parentResumeVersionId || undefined,
+          sourceJobId: resume.jobId || undefined,
+          templateId,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        }),
+      ),
       validationJson: resume.validationJson ?? existing?.validationJson ?? [],
       status: resume.status ?? existing?.status ?? "draft",
       lastExportPath: resume.lastExportPath ?? existing?.lastExportPath ?? "",
-      parentResumeVersionId: resume.parentResumeVersionId ?? existing?.parentResumeVersionId ?? "",
+      parentResumeVersionId,
+      baseResumeVersionId,
       generationProvider: resume.generationProvider ?? existing?.generationProvider ?? "deterministic",
       generationModel: resume.generationModel ?? existing?.generationModel ?? "",
       promptVersion: resume.promptVersion ?? existing?.promptVersion ?? "",
@@ -1036,7 +1084,7 @@ export class MemoryRepository implements AppRepository {
   async getDatabaseStatus() {
     return {
       writable: true,
-      schemaVersion: 5,
+      schemaVersion: 7,
       latestMigration: clone(this.state.migrationEvents.at(-1) ?? null),
     };
   }
@@ -1096,9 +1144,11 @@ export class MemoryRepository implements AppRepository {
       resumeFavorites: clone(this.state.resumeFavorites),
       resumeArchives: clone(this.state.resumeArchives),
       resumeRecommendations: clone(this.state.resumeRecommendations),
+      resumeReviews: clone(this.state.resumeReviews),
+      resumeImprovementRuns: clone(this.state.resumeImprovementRuns),
       settings: clone(this.state.settings),
       exportedAt: nowIso(),
-      schemaVersion: 5,
+      schemaVersion: 6,
     };
   }
 
@@ -1146,6 +1196,11 @@ export class MemoryRepository implements AppRepository {
               this.state.resumeRecommendations,
               payload.resumeRecommendations ?? [],
             ),
+            resumeReviews: mergeById(this.state.resumeReviews, payload.resumeReviews ?? []),
+            resumeImprovementRuns: mergeById(
+              this.state.resumeImprovementRuns,
+              payload.resumeImprovementRuns ?? [],
+            ),
             resumeFavorites: mergeResumeFlags(this.state.resumeFavorites, payload.resumeFavorites ?? []),
             resumeArchives: mergeResumeFlags(this.state.resumeArchives, payload.resumeArchives ?? []),
             settings: payload.settings,
@@ -1173,6 +1228,8 @@ export class MemoryRepository implements AppRepository {
             careerCopilotThreads: payload.careerCopilotThreads ?? [],
             careerCopilotMessages: payload.careerCopilotMessages ?? [],
             resumeRecommendations: payload.resumeRecommendations ?? [],
+            resumeReviews: payload.resumeReviews ?? [],
+            resumeImprovementRuns: payload.resumeImprovementRuns ?? [],
             resumeFavorites: payload.resumeFavorites ?? [],
             resumeArchives: payload.resumeArchives ?? [],
             migrationEvents: this.state.migrationEvents,
@@ -1345,6 +1402,44 @@ export class MemoryRepository implements AppRepository {
     this.persist();
   }
 
+  async listResumeReviews(resumeId?: string) {
+    return clone(
+      this.state.resumeReviews
+        .filter((review) => !resumeId || review.resumeId === resumeId)
+        .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt)),
+    );
+  }
+
+  async getResumeReview(id: string) {
+    return clone(this.state.resumeReviews.find((review) => review.id === id) ?? null);
+  }
+
+  async saveResumeReview(review: ResumeReview) {
+    this.state.resumeReviews = [
+      ...this.state.resumeReviews.filter((item) => item.id !== review.id),
+      clone(review),
+    ];
+    this.persist();
+    return clone(review);
+  }
+
+  async listResumeImprovementRuns(resumeId?: string) {
+    return clone(
+      this.state.resumeImprovementRuns
+        .filter((run) => !resumeId || run.sourceResumeId === resumeId || run.improvedResumeId === resumeId)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    );
+  }
+
+  async saveResumeImprovementRun(run: ResumeImprovementRun) {
+    this.state.resumeImprovementRuns = [
+      ...this.state.resumeImprovementRuns.filter((item) => item.id !== run.id),
+      clone(run),
+    ];
+    this.persist();
+    return clone(run);
+  }
+
   async listResumeFavorites() {
     return clone(this.state.resumeFavorites);
   }
@@ -1461,9 +1556,12 @@ export class MemoryRepository implements AppRepository {
         id: undefined,
         jobId: String(action.afterJson.targetJobId ?? base.jobId),
         name: String(action.afterJson.name ?? `${base.name} - child draft`),
+        kind: "tailored",
         status: "draft",
         lastExportPath: "",
         parentResumeVersionId: base.id,
+        baseResumeVersionId: base.id,
+        deterministicBaselineJson: base.contentJson,
         createdAt: undefined,
         updatedAt: undefined,
       });

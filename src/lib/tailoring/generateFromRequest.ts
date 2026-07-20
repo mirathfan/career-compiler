@@ -115,7 +115,10 @@ export function generateResumeFromAllowedEvidence(
   }
 
   const sections: ResumeCareerItemSection[] = [...bulletsByItem.entries()]
-    .map(([careerItemId, bullets]) => {
+    .map(([
+      careerItemId,
+      bullets,
+    ]): ResumeCareerItemSection | null => {
       const item = itemById.get(careerItemId);
       if (!item || item.type === "education") return null;
       return {
@@ -126,6 +129,8 @@ export function generateResumeFromAllowedEvidence(
         startDate: item.startDate,
         endDate: item.endDate,
         isCurrent: item.isCurrent,
+        url: item.url,
+        repositoryUrl: item.repositoryUrl,
         locked: request.constraints.lockedCareerItemIds.includes(careerItemId),
         bullets,
       };
