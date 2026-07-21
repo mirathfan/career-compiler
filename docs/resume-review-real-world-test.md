@@ -6,7 +6,7 @@ Date: 2026-07-20 (America/Chicago)
 
 The Resume Review and Auto-Improvement workflow passed a complete packaged-app acceptance test against the user's actual current resume and saved Confido job. The app reviewed the rendered PDFs with OpenAI, produced persisted structured scorecards, applied only three explicitly approved deterministic safe edits to a child, regenerated a one-page XeLaTeX PDF, and reviewed that child again.
 
-The improved resume is a professionally usable review draft. It is not ready for submission because the AURA Founder title and employment classification still require independent confirmation. The Master Resume and its original PDF remained unchanged, and no job application was submitted.
+The improved resume is professionally usable and now passes CareerCompiler's strict submission-readiness gate. The initial run correctly blocked on the AURA Founder title and employment classification; the user subsequently confirmed that AURA is their app under KASAT Labs and that the Founder/self-employment title and Nov 2025-present dates are accurate. CareerCompiler saved that confirmation as a structured `user_confirmed` claim and a new pre-submission review returned 77, medium risk, ready to submit, with zero critical issues. The Master Resume and its original PDF remained unchanged, and no job application was submitted.
 
 ## Tested Revisions
 
@@ -53,7 +53,8 @@ The API key was confirmed present in macOS Keychain under CareerCompiler's confi
 - Local validation found no unsupported-claim errors and two warnings.
 - The visible degree wording exactly matched the current structured source record: `Master of Applied Science, Computer Science (AI Specialization)`. No degree conflict was raised.
 - AURA exists as both an Experience item and a Project with matching dates. The duplicate coverage was detected.
-- AURA's saved source record contains the current organization, title, and dates, but there is no independent verified Candidate Claim for the Founder/leadership and employment classification. The strict gate therefore requires confirmation rather than rewriting it.
+- At the start of acceptance, AURA's saved source record contained the current organization, title, and dates, but there was no independent verified Candidate Claim for the Founder/leadership and employment classification. The strict gate therefore required confirmation rather than rewriting it.
+- In the follow-up, the user explicitly confirmed the Founder/self-employment classification, KASAT Labs organization, and Nov 2025-present dates. This was saved as `user_confirmed` claim `candidate-claim-47cb959f-3171-4970-a88e-081098a48c63`, linked to the existing AURA experience and project records.
 - The original summary contained 56 words, skills were a flat 32-token list, one bullet exceeded the long-bullet threshold, and repeated/feature-list phrasing reduced conciseness.
 
 ## Original Reviews
@@ -100,11 +101,13 @@ Review ID: `resume-review-3cf3e80a-f342-4c52-a9d9-fe2b7a58c002`
 
 The strict mode applied an overall readiness penalty even though the factual-safety category remained 86. This is intentional: a high category score cannot override a critical unresolved classification issue.
 
-## Critical Findings
+## Initial Critical Findings
 
 1. The AURA `Founder` leadership title and employment classification are not independently confirmed in Candidate Brain.
 2. The AURA organization and current dates exist in the structured source record, but should be explicitly confirmed before the resume is submitted.
 3. AURA appears in both Experience and Projects with overlapping dates/content. Consolidation could improve focus, but deleting or reclassifying either item is not safe without user confirmation.
+
+The first two findings were resolved by explicit user confirmation in Candidate Brain. The duplicate AURA coverage remains a non-blocking content-quality issue because confirmation of the underlying venture does not by itself authorize deleting or merging resume sections.
 
 Other quality findings included the long/repetitive summary, dense ungrouped Skills section, feature-list bullets, repeated `Built` openers, an internal test-count-heavy Forge bullet, bottom-page density, and limited direct evidence for some Confido-specific concepts. The reviewer did not invent missing financial-data, NLP, CPG, or rapid-learning evidence.
 
@@ -159,7 +162,33 @@ Review ID: `resume-review-51849577-56ee-4566-b16c-34f0606aee4e`
 
 Resolved or improved: summary repetition, flat skill-wall formatting, font/spacing readability, page balance, ATS skill scanning, and general conciseness.
 
-Still open: AURA Founder/employment confirmation, duplicate AURA coverage, confirmation of future/current chronology visible in the July 2026 resume, several feature-list/repeated-opener bullets, and lower-page density. A second automatic pass was not offered because no further material safe operation remained.
+Still open at this stage: AURA Founder/employment confirmation, duplicate AURA coverage, confirmation of future/current chronology visible in the July 2026 resume, several feature-list/repeated-opener bullets, and lower-page density. A second automatic pass was not offered because no further material safe operation remained.
+
+## Confirmed Final Pre-Submission Review
+
+After the user confirmed the AURA founder venture, CareerCompiler persisted the claim through the normal Candidate Brain repository path and reran the strict review against the same improved child and rendered PDF.
+
+Review ID: `resume-review-f8dffa73-6c4e-4542-8a12-12003c52b29d`
+
+- Overall: **77**
+- Factual risk: medium
+- Ready to submit: **yes**
+- Critical issues: **0**
+- Actual PDF attached and `pdfVisualReviewed`: yes
+- Final Approve control: enabled, not clicked during acceptance
+
+| Category | Score |
+| --- | ---: |
+| Visual quality | 86 |
+| ATS readability | 78 |
+| Content strength | 56 |
+| Factual safety | 86 |
+| Role fit | 76 |
+| Technical depth | 85 |
+| Conciseness | 68 |
+| Skills quality | 79 |
+
+The confirmed leadership claim removed the deterministic and model factual blocker without changing resume text. Remaining recommendations are non-blocking and confirmation-required: consolidate duplicate AURA coverage, shorten the 35-word opening AURA bullet, reduce repeated `Built` openers, clarify the Forge testing relationship, prioritize target-relevant skills, and increase layout spacing only after content consolidation and a one-page PDF recheck.
 
 ## Factual Preservation
 
@@ -184,7 +213,7 @@ The improved XeLaTeX output is a one-page PDF 1.7 document on a 612 x 792 point 
 - retained Experience, Projects, Education, metrics, citations, and project technology subtitles;
 - usable bottom margin and improved page balance.
 
-The lower half remains dense and AURA remains duplicated because consolidation requires confirmation. The PDF is professionally usable for continued review/editing, but it should not be submitted while the critical factual gate remains unresolved.
+The lower half remains dense and AURA remains duplicated because consolidation requires separate content-edit approval. After the Founder/self-employment claim was confirmed, the same PDF passed the final pre-submission gate and is professionally usable for submission. A final human proofread remains prudent, especially for chronology and duplicate emphasis.
 
 The private PDF and raster image were inspected from ignored local paths and were not committed.
 
@@ -219,15 +248,15 @@ During post-fix acceptance, two manual review runs were superseded because an ol
 ## API Usage
 
 - Model: `gpt-5.6` (the alias currently maps to GPT-5.6 Sol)
-- Paid OpenAI calls during acceptance: 7
-- Input tokens: approximately 60,411
-- Output tokens: approximately 38,118
-- Total tokens: approximately 98,529
+- Paid OpenAI calls during acceptance and factual-confirmation follow-up: 8
+- Input tokens: approximately 69,131
+- Output tokens: approximately 43,969
+- Total tokens: approximately 113,100
 - Schema failures: 0
 - Repair attempts: 0
 - Automatic duplicate calls: 0
 - Superseded manual calls due to the stale test process: 2
-- Approximate list-price cost: **$1.45**
+- Approximate list-price cost: **$1.66**
 
 The cost uses OpenAI's current [model pricing](https://developers.openai.com/api/docs/models), $5 per million input tokens and $30 per million output tokens for the `gpt-5.6` alias, and excludes any account-specific discounts or cached-token adjustments.
 
@@ -254,8 +283,9 @@ Packaged application:
 
 ## Known Limitations
 
-- The reviewer can detect insufficient evidence but cannot independently prove founder/employment classification; that requires a user-approved Candidate Brain claim or corrected source record.
+- The reviewer can detect insufficient evidence but cannot independently prove founder/employment classification. This test resolved that boundary correctly through a user-confirmed Candidate Brain claim.
 - Visual judgment remains partly model-based and should be paired with deterministic page checks and human inspection, as done here.
+- In the confirmed final review, one model rationale incorrectly stated that no raster page image was included. The tested request path attached the PDF as a high-detail `input_file`, request metadata persisted `pdfVisualReviewed = true`, and the PDF was independently rendered and inspected. Provider self-descriptions of input availability should therefore be treated as advisory rather than transport evidence.
 - The lower page remains content-dense until the user confirms whether duplicate AURA coverage can be consolidated or approves targeted bullet edits.
 - OpenAI score variation is expected across runs. Safety gates and local validation, not score alone, decide submission readiness.
 - Superseded draft children created during acceptance remain in the local library. They are not application artifacts and should only be removed through an explicit user action.
