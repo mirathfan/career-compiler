@@ -13,6 +13,7 @@ pub struct StructuredOpenAIRequest {
     pub input: Value,
     pub schema_name: String,
     pub schema: Value,
+    pub pdf_data_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,11 +61,26 @@ pub struct StructuredOpenAIResponse {
 }
 
 fn build_request_body(request: &StructuredOpenAIRequest) -> Value {
+    let mut user_content = vec![json!({
+        "type": "input_text",
+        "text": serde_json::to_string(&request.input).unwrap_or_default()
+    })];
+    if let Some(pdf_data_url) = request.pdf_data_url.as_ref() {
+        user_content.insert(
+            0,
+            json!({
+                "type": "input_file",
+                "filename": "resume.pdf",
+                "file_data": pdf_data_url,
+                "detail": "high"
+            }),
+        );
+    }
     json!({
         "model": request.model,
         "input": [
             { "role": "system", "content": request.instructions },
-            { "role": "user", "content": serde_json::to_string(&request.input).unwrap_or_default() }
+            { "role": "user", "content": user_content }
         ],
         "text": {
             "format": {
@@ -110,6 +126,16 @@ fn parse_structured_response(
 async fn execute_structured_openai(
     request: StructuredOpenAIRequest,
 ) -> Result<StructuredOpenAIResponse, String> {
+    if let Some(pdf_data_url) = request.pdf_data_url.as_ref() {
+        if !pdf_data_url.starts_with("data:application/pdf;base64,")
+            || pdf_data_url.len() > 14_000_000
+        {
+            return Err(
+                "pdf_input_rejected|The rendered PDF input is invalid or exceeds the review limit."
+                    .to_string(),
+            );
+        }
+    }
     let key = resolve_openai_key(&KeyringSecretStore)?;
     let started = Instant::now();
     let response = reqwest::Client::new()
@@ -152,6 +178,7 @@ pub async fn analyze_job_with_openai(request: AnalyzeJobRequest) -> Result<Strin
         }),
         schema_name: "job_analysis".to_string(),
         schema: request.schema,
+        pdf_data_url: None,
     })
     .await?;
     Ok(response.output_text)
@@ -232,6 +259,7 @@ mod tests {
             input: json!({ "selectedFacts": [{ "factId": "fact-1" }] }),
             schema_name: "tailored_resume".to_string(),
             schema: json!({ "type": "object", "additionalProperties": false }),
+            pdf_data_url: None,
         }
     }
 
@@ -242,6 +270,16 @@ mod tests {
         assert_eq!(body["text"]["format"]["strict"], true);
         assert_eq!(body["text"]["format"]["name"], "tailored_resume");
         assert!(!body.to_string().contains("sk-"));
+    }
+
+    #[test]
+    fn includes_a_rendered_pdf_as_a_high_detail_file_input() {
+        let mut request = request();
+        request.pdf_data_url = Some("data:application/pdf;base64,JVBERi0=".to_string());
+        let body = build_request_body(&request);
+        assert_eq!(body["input"][1]["content"][0]["type"], "input_file");
+        assert_eq!(body["input"][1]["content"][0]["detail"], "high");
+        assert_eq!(body["input"][1]["content"][1]["type"], "input_text");
     }
 
     #[test]

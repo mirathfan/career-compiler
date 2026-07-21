@@ -5,8 +5,8 @@ pub mod keychain;
 use commands::ai::{analyze_job_with_openai, run_openai_structured};
 use commands::files::{
     backup_database_before_migration, check_directory_writable, get_xelatex_diagnostics,
-    read_evidence_file, read_text_file, render_resume_latex, reveal_in_finder, write_pdf_file,
-    write_text_file,
+    read_evidence_file, read_text_file, render_resume_latex, reveal_in_finder,
+    write_generated_resume_pdf, write_pdf_file, write_text_file,
 };
 use commands::keychain_commands::{
     delete_openai_key, get_openai_key_status, set_openai_key, test_openai_key,
@@ -53,6 +53,7 @@ pub fn run() {
             check_directory_writable,
             read_evidence_file,
             write_pdf_file,
+            write_generated_resume_pdf,
             write_text_file,
             read_text_file,
             reveal_in_finder,

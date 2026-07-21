@@ -7,6 +7,7 @@ import type {
   ResumePlan,
   TailoredResume,
 } from "../../types/domain";
+import type { ResumeReviewAdvisory } from "../../schemas/resumeReview";
 import { createDeterministicCareerImportProposal } from "../import/careerIntake";
 import { createResumePlanFromRequest } from "../tailoring/plan";
 import { generateResumeFromAllowedEvidence } from "../tailoring/generateFromRequest";
@@ -17,6 +18,7 @@ import type {
   GenerateResumeInput,
   PlanResumeInput,
   RepairResumeInput,
+  ReviewResumeInput,
   ShortenBulletInput,
 } from "./provider";
 
@@ -321,5 +323,46 @@ export class MockAIProvider implements AIProvider {
                     model: input.modelName,
                   });
     return result(proposal, "career_intake", input.modelName);
+  }
+
+  async reviewResume(input: ReviewResumeInput): Promise<AIProviderResult<ResumeReviewAdvisory>> {
+    return result(
+      {
+        scores: {
+          visualQuality: 75,
+          atsReadability: 75,
+          contentStrength: 75,
+          factualSafety: 75,
+          roleFit: 75,
+          technicalDepth: 75,
+          conciseness: 75,
+          skillsQuality: 75,
+        },
+        rationales: {
+          visualQuality: "Mock visual review.",
+          atsReadability: "Mock ATS review.",
+          contentStrength: "Mock content review.",
+          factualSafety: "Local deterministic checks remain authoritative.",
+          roleFit: "Mock role-fit review.",
+          technicalDepth: "Mock technical-depth review.",
+          conciseness: "Mock conciseness review.",
+          skillsQuality: "Mock skills review.",
+        },
+        strengths: [],
+        weaknesses: [],
+        proposals: [],
+        visualInspection: {
+          readableFont: true,
+          clippingDetected: false,
+          bottomPageCompression: false,
+          educationDatesAligned: true,
+          skillsDense: false,
+          bulletsOverThreeLines: 0,
+          notes: "Mock provider does not inspect PDF pixels.",
+        },
+      },
+      "resume_review",
+      input.modelName,
+    );
   }
 }

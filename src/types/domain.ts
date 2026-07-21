@@ -11,9 +11,14 @@ export type ResumeImprovementKind =
   | "remove_bullet"
   | "reorder_bullets"
   | "condense_layout"
+  | "improve_readability"
+  | "categorize_skills"
+  | "shorten_summary"
+  | "consolidate_duplicate"
   | "remove_summary"
   | "section_order"
   | "manual_review";
+export type ResumeImprovementPriority = "low" | "medium" | "high" | "critical";
 export type SemanticSearchMode = "disabled" | "openai" | "local";
 export type ResumeGenerationSource = "ai" | "deterministic" | "user";
 export type SummaryMode = "auto" | "always" | "never";
@@ -54,6 +59,7 @@ export type AIRequestType =
   | "bullet_shortening"
   | "career_intake"
   | "career_copilot"
+  | "resume_review"
   | "embedding";
 export type CareerImportSourceType =
   | "paste_anything"
@@ -557,6 +563,7 @@ export interface TailoredResume {
   experience: ResumeCareerItemSection[];
   projects: ResumeCareerItemSection[];
   skills: string[];
+  skillGroups?: ResumeSkillGroup[];
   sectionOrder: Array<"summary" | "education" | "experience" | "projects" | "skills">;
   compactionActions: string[];
   layout: {
@@ -717,6 +724,7 @@ export interface PromptVersionMap {
   bulletShortening: string;
   careerIntake: string;
   careerCopilot: string;
+  resumeReview: string;
 }
 
 export interface AIProviderResult<T> {
@@ -899,6 +907,12 @@ export interface ResumeImprovementProposal {
   careerItemId?: string;
   section?: string;
   sourceFactIds: string[];
+  category: string;
+  priority: ResumeImprovementPriority;
+  expectedScoreImpact: number;
+  evidence: string[];
+  safeToAutoApply: boolean;
+  confirmationRequired: boolean;
   applied: boolean;
 }
 
@@ -918,6 +932,10 @@ export interface ResumeReview {
   generatedAt: string;
   provider: string;
   model: string;
+  reviewSource: "deterministic" | "hybrid";
+  pdfPageCount: number | null;
+  pdfVisualReviewed: boolean;
+  requestMetadata: AIRequestMetadata[];
 }
 
 export interface ResumeImprovementRun {
@@ -930,10 +948,14 @@ export interface ResumeImprovementRun {
   improvedReviewId: string;
   appliedProposalIds: string[];
   skippedProposalIds: string[];
+  rejectedProposalIds: string[];
   diff: ResumeDiffEntry[];
   pdfStatus: "not_rendered" | "rendered" | "failed";
   pdfPageCount: number | null;
   pdfError: string;
+  pdfPath: string;
+  passNumber: number;
+  stopReason: "" | "no_safe_changes" | "negligible_improvement" | "maximum_passes";
   createdAt: string;
 }
 

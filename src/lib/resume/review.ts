@@ -1,7 +1,7 @@
+import type { AppRepository } from "../database/repository";
 import type {
-  AppRepository,
-} from "../database/repository";
-import type {
+  AIRequestMetadata,
+  AIProviderMode,
   CandidateClaim,
   CareerFact,
   CareerItem,
@@ -20,6 +20,9 @@ import type {
   TailoredResume,
   ValidationIssue,
 } from "../../types/domain";
+import type { ResumeReviewAdvisory } from "../../schemas/resumeReview";
+import { createAIProvider } from "../ai/providerFactory";
+import { AIProviderError } from "../ai/provider";
 import { semanticResumeDiff } from "./diff";
 import { estimateResumePageCount } from "./compaction";
 import { normalizeTailoredResume } from "./normalize";
@@ -37,9 +40,14 @@ export interface ResumeReviewContext {
   candidateClaims?: CandidateClaim[];
   sensitiveAnswers?: SensitiveAnswer[];
   provider: string;
+  providerMode?: AIProviderMode;
+  configuredModel?: string;
   model: string;
   pdfPageCount?: number | null;
   pdfRenderError?: string;
+  pdfVisualReviewed?: boolean;
+  advisory?: ResumeReviewAdvisory;
+  requestMetadata?: AIRequestMetadata[];
   generatedAt?: string;
 }
 
@@ -54,7 +62,7 @@ export interface ResumeImprovementResult {
 export type RenderImprovedResumePdf = (
   resume: TailoredResume,
   templateSettings: ResumeTemplateSettings,
-) => Promise<{ pageCount: number }>;
+) => Promise<{ pageCount: number; pdfDataUrl?: string; pdfPath?: string }>;
 
 const strongVerbPattern =
   /^(built|implemented|created|designed|developed|shipped|led|owned|automated|optimized|improved|reduced|increased|launched|integrated|architected|validated|tested|deployed|delivered)\b/i;
@@ -106,7 +114,15 @@ function resumeText(resume: TailoredResume) {
 }
 
 function represented(terms: string[], text: string) {
-  return unique(terms).filter((term) => containsTerm(text, term));
+  const textWords = new Set(words(text));
+  const stopWords = new Set(["and", "for", "the", "with", "from", "into", "experience", "systems", "system"]);
+  return unique(terms).filter((term) => {
+    if (containsTerm(text, term)) return true;
+    const meaningful = words(term).filter((word) => word.length > 2 && !stopWords.has(word));
+    if (!meaningful.length) return false;
+    const matches = meaningful.filter((word) => textWords.has(word)).length;
+    return matches / meaningful.length >= 0.6;
+  });
 }
 
 function validUrl(value: string) {
@@ -228,6 +244,12 @@ function proposal(
     careerItemId: options.careerItemId,
     section: options.section,
     sourceFactIds: options.sourceFactIds ?? [],
+    category: options.category ?? "Resume quality",
+    priority: options.priority ?? (safety === "safe" ? "medium" : "high"),
+    expectedScoreImpact: options.expectedScoreImpact ?? 2,
+    evidence: options.evidence ?? (options.sourceFactIds?.length ? options.sourceFactIds : ["Deterministic local review"]),
+    safeToAutoApply: options.safeToAutoApply ?? safety === "safe",
+    confirmationRequired: options.confirmationRequired ?? safety !== "safe",
     applied: false,
   };
 }
@@ -410,6 +432,183 @@ function addClassificationFindings(
     if (item && item.type !== "employment") {
       add(reviewMode === "pre_submission" ? "critical" : "high", experience.title, `${experience.title} is listed as experience but Career Memory classifies it as ${item.type}.`, reviewMode === "pre_submission");
     }
+  }
+}
+
+function normalizedSkillKey(value: string) {
+  return value.toLowerCase().replace(/\bapis\b/g, "api").replace(/[^a-z0-9+#.]+/g, "").trim();
+}
+
+function skillGroupName(category: string) {
+  const value = category.toLowerCase();
+  if (value.includes("frontend") || value.includes("mobile")) return "Frontend & Mobile";
+  if (value.includes("backend") || value.includes("data")) return "Backend & Data";
+  if (value.includes("ai") || value.includes("ml")) return "AI / ML";
+  if (value.includes("cloud") || value.includes("tool") || value.includes("infrastructure")) return "Cloud & Tools";
+  if (value.includes("language")) return "Languages";
+  if (value.includes("core") || value.includes("computer science")) return "Core CS";
+  return "Additional";
+}
+
+function categorizedSkillGroups(resume: TailoredResume, skills: Skill[]) {
+  const recordByName = new Map(skills.filter((skill) => skill.enabled).map((skill) => [skill.name, skill]));
+  const groups = new Map<string, string[]>();
+  for (const name of resume.skills) {
+    const record = recordByName.get(name);
+    if (!record) continue;
+    const group = skillGroupName(record.category);
+    groups.set(group, [...(groups.get(group) ?? []), name]);
+  }
+  const order = ["Languages", "Frontend & Mobile", "Backend & Data", "AI / ML", "Cloud & Tools", "Core CS", "Additional"];
+  return order.flatMap((name) => {
+    const values = groups.get(name) ?? [];
+    return values.length ? [{ id: `skills-${normalizedSkillKey(name)}`, name, skills: values }] : [];
+  });
+}
+
+function duplicateCareerPairs(resume: TailoredResume) {
+  const pairs: Array<{ experience: TailoredResume["experience"][number]; project: TailoredResume["projects"][number] }> = [];
+  for (const experience of resume.experience) {
+    for (const project of resume.projects) {
+      const experienceTokens = new Set(words(`${experience.title} ${experience.organization}`).filter((word) => word.length >= 4));
+      const projectTokens = words(`${project.title} ${project.organization}`).filter((word) => word.length >= 4);
+      const sharedIdentity = projectTokens.some((word) => experienceTokens.has(word));
+      const sameDates = experience.startDate === project.startDate && experience.endDate === project.endDate && experience.isCurrent === project.isCurrent;
+      if (sharedIdentity && sameDates) pairs.push({ experience, project });
+    }
+  }
+  return pairs;
+}
+
+function addContentStructureFindings({
+  context,
+  analysis,
+  weaknesses,
+  strengths,
+  criticalIssues,
+  recommendedChanges,
+}: {
+  context: ResumeReviewContext;
+  analysis: JobAnalysis | null;
+  weaknesses: ResumeReviewFinding[];
+  strengths: ResumeReviewFinding[];
+  criticalIssues: ResumeReviewFinding[];
+  recommendedChanges: ResumeImprovementProposal[];
+}) {
+  const resume = context.resumeVersion.contentJson;
+  const summary = resume.summary.join(" ");
+  const summaryWords = words(summary).length;
+  if (summaryWords > 45) {
+    weaknesses.push(finding("medium", "Content strength", `Summary is ${summaryWords} words and repeats detail shown below.`, "Shorten it or remove it from the job-specific child version."));
+    const shorter = summary.split(/(?<=[.!?])\s+/)[0] ?? "";
+    recommendedChanges.push(
+      proposal("shorten_summary", "needs_review", "Review a shorter summary", "A rewritten summary can subtly change positioning, so the user must approve the exact wording.", summary, shorter, {
+        section: "summary",
+        category: "Content strength",
+        priority: "medium",
+        expectedScoreImpact: 3,
+        evidence: ["Existing summary text only"],
+        confirmationRequired: true,
+      }),
+      proposal("remove_summary", "safe", "Remove the long summary from the child", "Removal adds no claim and recovers space for a clearer one-page layout.", summary, "", {
+        section: "summary",
+        category: "Conciseness",
+        priority: "high",
+        expectedScoreImpact: 5,
+        evidence: ["Deterministic word count", "No factual text is added or altered"],
+      }),
+    );
+  }
+
+  const normalizedSkills = resume.skills.map(normalizedSkillKey);
+  const duplicateSkills = normalizedSkills.length - new Set(normalizedSkills).size;
+  const coursework = resume.skills.filter((skill) => /data structures|algorithms|operating systems|computer networks|coursework/i.test(skill));
+  if (!resume.skillGroups?.length) {
+    weaknesses.push(finding("medium", "Skills quality", `${resume.skills.length} skills are presented as a dense flat keyword list.`, "Group verified skills into short ATS-readable categories."));
+    const groups = categorizedSkillGroups(resume, context.skills);
+    recommendedChanges.push(
+      proposal("categorize_skills", "safe", "Categorize the verified skill list", "Every rendered token remains an enabled Candidate Brain skill; only presentation changes.", resume.skills.join(" | "), groups.map((group) => `${group.name}: ${group.skills.join(", ")}`).join(" | "), {
+        section: "skills",
+        category: "Skills quality",
+        priority: "high",
+        expectedScoreImpact: 6,
+        evidence: groups.flatMap((group) => group.skills),
+      }),
+    );
+  } else {
+    strengths.push(finding("info", "Skills quality", "Skills are grouped into readable categories.", "Keep every displayed skill tied to an enabled skill record."));
+    if (resume.skills.length > 24) {
+      weaknesses.push(finding("low", "Skills quality", `${resume.skills.length} verified skills remain dense even after categorization.`, "Remove or de-emphasize skills only with explicit approval."));
+    }
+  }
+  if (duplicateSkills) {
+    weaknesses.push(finding("medium", "Skills quality", `${duplicateSkills} duplicate or alias skill entries were detected.`, "Keep one approved spelling for each skill."));
+  }
+  if (coursework.length) {
+    weaknesses.push(finding("low", "Skills quality", `${coursework.length} coursework-like topics occupy the skills section.`, "Keep them only when the target job values programming fundamentals."));
+  }
+  if (analysis) {
+    const visible = resumeText(resume);
+    const relevant = resume.skills.filter((skill) => represented([...analysis.requiredSkills, ...analysis.preferredSkills, ...analysis.domainKeywords], `${visible} ${skill}`).length);
+    if (relevant.length < Math.min(8, resume.skills.length)) {
+      weaknesses.push(finding("low", "Skills quality", "Several skills have weak direct relevance to the selected job.", "De-emphasize them only with explicit user approval."));
+    }
+  }
+
+  for (const pair of duplicateCareerPairs(resume)) {
+    weaknesses.push(finding("high", "Content strength", `${pair.experience.title} and ${pair.project.title} appear to describe the same initiative over the same dates.`, "Confirm whether both sections are necessary; consolidate only with explicit approval.", {
+      section: pair.project.title,
+    }));
+    recommendedChanges.push(
+      proposal("consolidate_duplicate", "needs_review", "Confirm duplicated experience and project coverage", "Removing or merging a project changes career classification and requires user confirmation.", `${pair.experience.title} in Experience; ${pair.project.title} in Projects`, "Pending user decision", {
+        careerItemId: pair.project.careerItemId,
+        section: pair.project.title,
+        category: "Content strength",
+        priority: "high",
+        expectedScoreImpact: 6,
+        evidence: [pair.experience.careerItemId, pair.project.careerItemId, "Matching date range"],
+        confirmationRequired: true,
+      }),
+    );
+  }
+
+  const verifiedClaims = (context.candidateClaims ?? []).filter((claim) => ["verified", "user_confirmed"].includes(claim.verificationStatus));
+  for (const experience of resume.experience.filter((entry) => /\b(founder|co-founder|owner|director|head|lead|manager)\b/i.test(entry.title))) {
+    const identity = `${experience.title} ${experience.organization}`.toLowerCase();
+    const verified = verifiedClaims.some((claim) => {
+      const value = JSON.stringify(claim.value).toLowerCase();
+      return words(identity).filter((word) => word.length >= 4).some((word) => value.includes(word));
+    });
+    if (verified) continue;
+    const blocking = context.reviewMode === "pre_submission";
+    const target = blocking ? criticalIssues : weaknesses;
+    target.push(finding(blocking ? "critical" : "high", "Factual safety", `Leadership title and employment classification for ${experience.title} are not independently confirmed in Candidate Brain.`, "Confirm the organization, title, employment classification, and dates before final submission.", {
+      section: experience.title,
+      blocking,
+    }));
+    recommendedChanges.push(
+      proposal("manual_review", "needs_review", "Confirm leadership and employment classification", "CareerCompiler will not silently alter a leadership title or employment classification.", `${experience.title} | ${experience.organization} | ${experience.startDate} - ${experience.isCurrent ? "Present" : experience.endDate}`, "Pending user confirmation", {
+        careerItemId: experience.careerItemId,
+        section: experience.title,
+        category: "Factual safety",
+        priority: "critical",
+        expectedScoreImpact: 0,
+        evidence: [experience.careerItemId, "No verified Candidate Brain leadership claim"],
+        confirmationRequired: true,
+      }),
+    );
+  }
+
+  if (resume.layout.bodyFontSize < 9.25 && summaryWords > 45) {
+    recommendedChanges.push(
+      proposal("improve_readability", "safe", "Raise the child resume to the readability floor", "After removing the long summary, increase approved body font and spacing settings and validate the rendered page count again.", `font ${resume.layout.bodyFontSize}, spacing ${resume.layout.spacingScale}`, "font 9.25, spacing 0.9", {
+        section: "layout",
+        category: "Visual quality",
+        priority: "high",
+        expectedScoreImpact: 7,
+        evidence: ["Approved template bounds", "Actual PDF will be rendered and rechecked"],
+      }),
+    );
   }
 }
 
@@ -738,6 +937,87 @@ function addPreSubmissionFindings({
   }
 }
 
+const advisoryCategoryLabels: Record<string, string> = {
+  visual_quality: "Visual quality",
+  ats_readability: "ATS readability",
+  content_strength: "Content strength",
+  factual_safety: "Factual safety",
+  role_fit: "Role fit",
+  technical_depth: "Technical depth",
+  conciseness: "Conciseness",
+  skills_quality: "Skills quality",
+};
+
+function addAdvisoryFindings(context: ResumeReviewContext, strengths: ResumeReviewFinding[], weaknesses: ResumeReviewFinding[], criticalIssues: ResumeReviewFinding[], recommendedChanges: ResumeImprovementProposal[]) {
+  const advisory = context.advisory;
+  if (!advisory) return;
+  const factIds = new Set(context.facts.map((fact) => fact.id));
+  const mapFinding = (item: ResumeReviewAdvisory["strengths"][number]) => finding(
+    item.severity,
+    advisoryCategoryLabels[item.category] ?? item.category,
+    item.message,
+    item.recommendation,
+    {
+      section: item.target || undefined,
+      relatedFactIds: item.evidenceIds.filter((id) => factIds.has(id)),
+      blocking: false,
+    },
+  );
+  strengths.push(...advisory.strengths.map(mapFinding));
+  for (const item of advisory.weaknesses) {
+    const mapped = mapFinding(item);
+    if (item.severity === "critical") criticalIssues.push(mapped);
+    else weaknesses.push(mapped);
+  }
+
+  if (advisory.visualInspection.clippingDetected || !advisory.visualInspection.readableFont) {
+    const blocking = context.reviewMode === "pre_submission";
+    const target = blocking ? criticalIssues : weaknesses;
+    target.push(finding(blocking ? "critical" : "high", "Visual quality", advisory.visualInspection.notes || "Rendered PDF has a readability problem.", "Correct the layout and rerender the PDF before approval.", { blocking }));
+  }
+  if (advisory.visualInspection.bottomPageCompression) {
+    weaknesses.push(finding("medium", "Visual quality", "The rendered PDF is compressed near the bottom of the page.", "Remove lower-value content before reducing font size or margins further."));
+  }
+  if (!advisory.visualInspection.educationDatesAligned) {
+    weaknesses.push(finding("medium", "Visual quality", "Education dates are not cleanly aligned in the rendered PDF.", "Adjust content density and rerender; do not change the dates."));
+  }
+  if (advisory.visualInspection.bulletsOverThreeLines) {
+    weaknesses.push(finding("medium", "Conciseness", `${advisory.visualInspection.bulletsOverThreeLines} bullet${advisory.visualInspection.bulletsOverThreeLines === 1 ? "" : "s"} render beyond three lines.`, "Shorten only with the same cited facts and explicit wording approval."));
+  }
+
+  const operationMap: Record<ResumeReviewAdvisory["proposals"][number]["operation"], ResumeImprovementProposal["kind"]> = {
+    shorten_summary: "shorten_summary",
+    categorize_skills: "categorize_skills",
+    rewrite_bullet: "manual_review",
+    remove_bullet: "remove_bullet",
+    consolidate_duplicate: "consolidate_duplicate",
+    reorder_bullets: "reorder_bullets",
+    section_order: "section_order",
+    layout: "manual_review",
+    manual_review: "manual_review",
+  };
+  for (const item of advisory.proposals) {
+    recommendedChanges.push(proposal(
+      operationMap[item.operation],
+      "needs_review",
+      item.title,
+      item.reason,
+      item.before,
+      item.after,
+      {
+        section: item.target || undefined,
+        sourceFactIds: item.evidenceIds.filter((id) => factIds.has(id)),
+        category: advisoryCategoryLabels[item.category] ?? item.category,
+        priority: item.priority,
+        expectedScoreImpact: item.expectedScoreImpact,
+        evidence: item.evidenceIds.length ? item.evidenceIds : ["OpenAI PDF review"],
+        safeToAutoApply: false,
+        confirmationRequired: true,
+      },
+    ));
+  }
+}
+
 function dedupeProposals(proposals: ResumeImprovementProposal[]) {
   const seen = new Set<string>();
   return proposals.filter((item) => {
@@ -776,6 +1056,14 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
 
   addValidationFindings(resume, validationIssues, weaknesses, criticalIssues, recommendedChanges);
   addClassificationFindings(resume, context.items, context.reviewMode, weaknesses, criticalIssues);
+  addContentStructureFindings({
+    context,
+    analysis,
+    weaknesses,
+    strengths,
+    criticalIssues,
+    recommendedChanges,
+  });
   addVisualAndAtsFindings({
     resume,
     analysis,
@@ -799,6 +1087,7 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
   addStyleFindings(resume, weaknesses, strengths, recommendedChanges);
   addLowestValueRemovalForOverflow(resume, pageCount, recommendedChanges);
   addPreSubmissionFindings({ context, pageCount, criticalIssues });
+  addAdvisoryFindings(context, strengths, weaknesses, criticalIssues, recommendedChanges);
 
   if (!validationErrors.length) {
     strengths.push(finding("info", "Factual accuracy", "No blocking validation errors were found.", "Continue to validate after every edit."));
@@ -810,16 +1099,43 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
     strengths.push(finding("info", "Evidence", "Every included project and experience bullet has source fact citations.", "Keep source facts attached during edits."));
   }
 
+  const summaryWords = words(resume.summary.join(" ")).length;
+  const longBullets = includedBullets.filter(({ bullet }) => words(bullet.text).length > 32).length;
+  const featureLists = includedBullets.filter(({ bullet }) => /:\s|(?:,.*){3,}/.test(bullet.text)).length;
+  const technicallyDetailed = includedBullets.filter(({ bullet }) =>
+    bullet.sourceFactIds.some((id) => (factsById.get(id)?.skillTags.length ?? 0) >= 2),
+  ).length;
+  const duplicatePairs = duplicateCareerPairs(resume).length;
+  const normalizedSkills = resume.skills.map(normalizedSkillKey);
+  const duplicateSkills = normalizedSkills.length - new Set(normalizedSkills).size;
+  const courseworkSkills = resume.skills.filter((skill) => /data structures|algorithms|operating systems|computer networks|coursework/i.test(skill)).length;
+  const groupedSkills = Boolean(resume.skillGroups?.length);
+
   const factualScore = 100 - validationErrors.length * 28 - validationWarnings.length * 7 - needsReviewFacts.length * 5 - missingCitations * 18;
-  const evidenceScore = includedBullets.length
-    ? 100 - missingCitations * 25 - needsReviewFacts.length * 7
-    : 30;
-  const impactScore = 42 + metricShare * 34 + verbShare * 24;
-  const clarityScore = 100
-    - validationIssues.filter((issue) => ["long_bullet", "vague_bullet", "repeated_action_phrase", "duplicate_bullet"].includes(issue.code)).length * 10
-    - Math.max(0, avgWords - 24) * 1.5;
+  const contentScore = 50 + metricShare * 18 + verbShare * 22
+    - duplicatePairs * 8
+    - featureLists * 2
+    - (summaryWords > 45 ? 7 : 0);
+  const concisenessScore = 96
+    - longBullets * 10
+    - Math.max(0, avgWords - 22) * 2
+    - Math.max(0, summaryWords - 35) * 0.35
+    - featureLists * 2;
+  const technicalDepthScore = 48
+    + (includedBullets.length ? (technicallyDetailed / includedBullets.length) * 38 : 0)
+    + Math.min(12, metricShare * 20)
+    - featureLists;
+  const skillsScore = 88
+    - (resume.skills.length > 24 ? 12 : 0)
+    - duplicateSkills * 8
+    - courseworkSkills * 2
+    + (groupedSkills ? 9 : 0);
   const visualScore = pageCount === 1
-    ? 88 - (resume.layout.bodyFontSize < 9.25 ? 10 : 0) - (resume.layout.spacingScale < 0.85 ? 8 : 0)
+    ? 92
+      - (resume.layout.bodyFontSize < 9.25 ? 10 : 0)
+      - (resume.layout.spacingScale < 0.85 ? 7 : 0)
+      - (!groupedSkills && resume.skills.length > 24 ? 7 : 0)
+      - (summaryWords > 45 ? 4 : 0)
     : 55 - (pageCount - 1) * 28;
   const atsScore = analysis
     ? 45
@@ -833,24 +1149,20 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
       + (responsibility.total ? (responsibility.matched.length / responsibility.total) * 23 : 10)
       + Math.min(10, preferredSkills.length * 2)
     : 60 + Math.min(25, resume.projects.length * 5 + resume.experience.length * 5);
-  const preSubmissionScore = context.reviewMode === "pre_submission"
-    ? 100 - criticalIssues.filter((issue) => issue.blocking).length * 35 - weaknesses.filter((issue) => issue.severity === "high").length * 12
-    : 100;
-
+  const advisory = context.advisory;
+  const blend = (local: number, model: number | undefined, localWeight = 0.65) =>
+    model === undefined ? local : local * localWeight + model * (1 - localWeight);
+  const rationale = (local: string, model: string | undefined) => model ? `${local} PDF review: ${model}` : local;
   const categoryScores = [
-    categoryScore("factual_accuracy", "Factual accuracy", factualScore, context.reviewMode === "pre_submission" ? 1.7 : 1.4, `${validationErrors.length} errors and ${validationWarnings.length} warnings.`),
-    categoryScore("evidence", "Evidence grounding", evidenceScore, 1.1, `${citedFactIds.length} cited source facts across ${includedBullets.length} included bullets.`),
-    categoryScore("impact", "Impact", impactScore, 0.9, `${Math.round(metricShare * 100)}% metric-bearing bullets and ${Math.round(verbShare * 100)}% strong openers.`),
-    categoryScore("clarity", "Clarity", clarityScore, 0.9, `Average included bullet length is ${avgWords.toFixed(1)} words.`),
-    categoryScore("ats", analysis ? "ATS and keyword coverage" : "General ATS readiness", atsScore, context.reviewMode === "general" ? 0.9 : 1.1, analysis ? `${requiredSkills.length} of ${analysis.requiredSkills.length} required skills visible.` : `${requiredSkills.length} broad software terms visible.`),
-    categoryScore("role_fit", analysis ? "Role fit" : "Software-engineering fit", roleScore, context.reviewMode === "general" ? 0.8 : 1.3, analysis ? `${responsibility.matched.length} of ${responsibility.total} responsibilities represented.` : `${resume.projects.length + resume.experience.length} career sections represented.`),
-    categoryScore("visual", "Visual presentation", visualScore, 0.9, `Page count signal: ${pageCount}.`),
+    categoryScore("visual_quality", "Visual quality", blend(visualScore, advisory?.scores.visualQuality, 0.6), 1, rationale(`Rendered page count ${pageCount}; body font ${resume.layout.bodyFontSize}pt.`, advisory?.rationales.visualQuality)),
+    categoryScore("ats_readability", "ATS readability", blend(atsScore, advisory?.scores.atsReadability), 1.1, rationale(analysis ? `${requiredSkills.length} of ${analysis.requiredSkills.length} requirement phrases represented.` : `${requiredSkills.length} broad software terms represented.`, advisory?.rationales.atsReadability)),
+    categoryScore("content_strength", "Content strength", blend(contentScore, advisory?.scores.contentStrength, 0.6), 1, rationale(`${Math.round(metricShare * 100)}% metric-bearing bullets; ${duplicatePairs} likely duplicate initiative pair(s).`, advisory?.rationales.contentStrength)),
+    categoryScore("factual_safety", "Factual safety", factualScore, context.reviewMode === "pre_submission" ? 1.6 : 1.3, `${validationErrors.length} errors, ${validationWarnings.length} warnings, ${citedFactIds.length} cited facts. Local validation is authoritative.`),
+    categoryScore("role_fit", "Role fit", blend(roleScore, advisory?.scores.roleFit), context.reviewMode === "general" ? 0.9 : 1.3, rationale(analysis ? `${responsibility.matched.length} of ${responsibility.total} responsibilities represented.` : "Broad software-engineering fit.", advisory?.rationales.roleFit)),
+    categoryScore("technical_depth", "Technical depth", blend(technicalDepthScore, advisory?.scores.technicalDepth, 0.6), 1, rationale(`${technicallyDetailed} of ${includedBullets.length} bullets cite multi-skill technical evidence.`, advisory?.rationales.technicalDepth)),
+    categoryScore("conciseness", "Conciseness", blend(concisenessScore, advisory?.scores.conciseness, 0.6), 1, rationale(`${longBullets} long bullets; ${summaryWords}-word summary.`, advisory?.rationales.conciseness)),
+    categoryScore("skills_quality", "Skills quality", blend(skillsScore, advisory?.scores.skillsQuality, 0.6), 1, rationale(`${resume.skills.length} verified skill tokens; ${groupedSkills ? "categorized" : "flat"} presentation.`, advisory?.rationales.skillsQuality)),
   ];
-  if (context.reviewMode === "pre_submission") {
-    categoryScores.push(
-      categoryScore("pre_submission", "Pre-submission gates", preSubmissionScore, 1.4, `${criticalIssues.filter((issue) => issue.blocking).length} blocking final-review issue(s).`),
-    );
-  }
 
   const totalWeight = categoryScores.reduce((total, score) => total + score.weight, 0);
   let overallScore = categoryScores.reduce((total, score) => total + score.score * score.weight, 0) / totalWeight;
@@ -860,12 +1172,17 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
   if (context.reviewMode === "pre_submission" && criticalIssues.some((issue) => issue.blocking)) {
     overallScore = Math.min(overallScore, 59);
   }
+  const unresolvedFactualConflict = [...weaknesses, ...criticalIssues].some((issue) =>
+    ["Factual accuracy", "Factual safety"].includes(issue.category) &&
+    ["high", "critical"].includes(issue.severity),
+  );
   const readyToSubmit =
     pageCount === 1 &&
     missingResumeContact(resume).length === 0 &&
     !context.pdfRenderError &&
     overallScore >= 75 &&
     (factualRiskLevel === "low" || factualRiskLevel === "medium") &&
+    !unresolvedFactualConflict &&
     !criticalIssues.some((issue) => issue.blocking);
 
   return {
@@ -884,6 +1201,10 @@ export function buildResumeReview(context: ResumeReviewContext): ResumeReview {
     generatedAt: context.generatedAt ?? nowIso(),
     provider: context.provider,
     model: context.model,
+    reviewSource: context.advisory ? "hybrid" : "deterministic",
+    pdfPageCount: pageCount,
+    pdfVisualReviewed: Boolean(context.pdfVisualReviewed && context.advisory),
+    requestMetadata: context.requestMetadata ?? [],
   };
 }
 
@@ -928,18 +1249,31 @@ export function applySafeResumeImprovements({
   resume,
   proposals,
   facts,
+  skills = [],
+  templateSettings,
+  approvedProposalIds,
 }: {
   resume: TailoredResume;
   proposals: ResumeImprovementProposal[];
   facts: CareerFact[];
+  skills?: Skill[];
+  templateSettings: ResumeTemplateSettings;
+  approvedProposalIds: string[];
 }) {
   const next = normalizeTailoredResume(structuredClone(resume));
+  const nextTemplateSettings = structuredClone(templateSettings);
   next.id = createId("tailored-resume");
   const appliedProposalIds: string[] = [];
   const skippedProposalIds: string[] = [];
+  const approved = new Set(approvedProposalIds);
 
   for (const proposalItem of proposals) {
-    if (proposalItem.safety !== "safe") {
+    if (
+      proposalItem.safety !== "safe" ||
+      !proposalItem.safeToAutoApply ||
+      proposalItem.confirmationRequired ||
+      !approved.has(proposalItem.id)
+    ) {
       skippedProposalIds.push(proposalItem.id);
       continue;
     }
@@ -976,6 +1310,28 @@ export function applySafeResumeImprovements({
       appliedProposalIds.push(proposalItem.id);
       continue;
     }
+    if (proposalItem.kind === "categorize_skills") {
+      const groups = categorizedSkillGroups(next, skills);
+      const flattened = groups.flatMap((group) => group.skills);
+      const groupedSkills = flattened.map(normalizedSkillKey).sort();
+      const originalSkills = next.skills.map(normalizedSkillKey).sort();
+      if (!groups.length || groupedSkills.join("|") !== originalSkills.join("|")) {
+        skippedProposalIds.push(proposalItem.id);
+        continue;
+      }
+      next.skillGroups = groups;
+      next.compactionActions.push("Resume Review categorized the existing verified skill list.");
+      appliedProposalIds.push(proposalItem.id);
+      continue;
+    }
+    if (proposalItem.kind === "improve_readability") {
+      next.layout.bodyFontSize = Math.max(9.25, next.layout.bodyFontSize);
+      next.layout.spacingScale = Math.max(0.9, next.layout.spacingScale);
+      nextTemplateSettings.bodyFontSize = Math.max(9.25, nextTemplateSettings.bodyFontSize);
+      next.compactionActions.push("Resume Review raised body font and spacing to the approved readability floor.");
+      appliedProposalIds.push(proposalItem.id);
+      continue;
+    }
     if (proposalItem.kind === "reorder_bullets") {
       reorderBullets(next, facts);
       appliedProposalIds.push(proposalItem.id);
@@ -990,7 +1346,12 @@ export function applySafeResumeImprovements({
   }
 
   next.approvedWarningCodes = [];
-  return { resume: next, appliedProposalIds: unique(appliedProposalIds), skippedProposalIds: unique(skippedProposalIds) };
+  return {
+    resume: next,
+    templateSettings: nextTemplateSettings,
+    appliedProposalIds: unique(appliedProposalIds),
+    skippedProposalIds: unique(skippedProposalIds),
+  };
 }
 
 async function reviewContextForRepository({
@@ -1028,11 +1389,159 @@ async function reviewContextForRepository({
     skills,
     candidateClaims,
     sensitiveAnswers,
-    provider: `local-${settings.aiProvider}`,
-    model: `resume-review-v1${settings.modelName ? ` / ${settings.modelName}` : ""}`,
+    provider: "local-deterministic",
+    providerMode: settings.aiProvider,
+    configuredModel: settings.modelName,
+    model: "resume-review-v2",
     pdfPageCount,
     pdfRenderError,
   };
+}
+
+function aiReviewContext(context: ResumeReviewContext, deterministicReview: ResumeReview) {
+  const resume = context.resumeVersion.contentJson;
+  const citedFactIds = new Set(
+    allResumeBullets(resume)
+      .filter(({ bullet }) => bullet.included)
+      .flatMap(({ bullet }) => bullet.sourceFactIds),
+  );
+  return {
+    resume: {
+      headline: resume.header.headline,
+      contactPresence: {
+        name: Boolean(resume.header.fullName),
+        location: Boolean(resume.header.location),
+        email: Boolean(resume.header.email),
+        phone: Boolean(resume.header.phone),
+        portfolio: Boolean(resume.header.portfolioUrl),
+        linkedIn: Boolean(resume.header.linkedInUrl),
+        github: Boolean(resume.header.githubUrl),
+      },
+      summary: resume.summary,
+      skills: resume.skills,
+      skillGroups: resume.skillGroups ?? [],
+      layout: resume.layout,
+      sectionOrder: resume.sectionOrder,
+      experience: resume.experience.map((section) => ({
+        careerItemId: section.careerItemId,
+        title: section.title,
+        organization: section.organization,
+        startDate: section.startDate,
+        endDate: section.endDate,
+        isCurrent: section.isCurrent,
+        bullets: section.bullets.filter((bullet) => bullet.included).map((bullet) => ({
+          id: bullet.id,
+          text: bullet.text,
+          sourceFactIds: bullet.sourceFactIds,
+        })),
+      })),
+      projects: resume.projects.map((section) => ({
+        careerItemId: section.careerItemId,
+        title: section.title,
+        organization: section.organization,
+        startDate: section.startDate,
+        endDate: section.endDate,
+        isCurrent: section.isCurrent,
+        bullets: section.bullets.filter((bullet) => bullet.included).map((bullet) => ({
+          id: bullet.id,
+          text: bullet.text,
+          sourceFactIds: bullet.sourceFactIds,
+        })),
+      })),
+      education: resume.education,
+    },
+    targetJob: context.job ? {
+      company: context.job.company,
+      roleTitle: context.job.roleTitle,
+      description: context.job.rawDescription,
+      analysis: fallbackJobAnalysis(context.job),
+    } : null,
+    evidence: context.facts.filter((fact) => citedFactIds.has(fact.id)).map((fact) => ({
+      id: fact.id,
+      careerItemId: fact.careerItemId,
+      statement: fact.statement,
+      evidenceStatus: fact.evidenceStatus,
+      metricTokens: fact.metricTokens,
+      skillTags: fact.skillTags,
+    })),
+    careerItems: context.items
+      .filter((item) => [...resume.experience, ...resume.projects, ...resume.education].some((section) => section.careerItemId === item.id))
+      .map((item) => ({
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        organization: item.organization,
+        startDate: item.startDate,
+        endDate: item.endDate,
+        isCurrent: item.isCurrent,
+      })),
+    approvedSkills: context.skills.filter((skill) => skill.enabled).map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      category: skill.category,
+      proficiencyNote: skill.proficiencyNote,
+    })),
+    verifiedCandidateClaims: (context.candidateClaims ?? []).filter((claim) => ["verified", "user_confirmed"].includes(claim.verificationStatus)),
+    deterministicReview: {
+      scores: deterministicReview.categoryScores,
+      strengths: deterministicReview.strengths,
+      weaknesses: deterministicReview.weaknesses,
+      criticalIssues: deterministicReview.criticalIssues,
+      factualRiskLevel: deterministicReview.factualRiskLevel,
+      pdfPageCount: deterministicReview.pdfPageCount,
+    },
+  };
+}
+
+async function addProviderAdvisory(context: ResumeReviewContext, pdfDataUrl: string) {
+  if (context.providerMode !== "openai" || !pdfDataUrl) return context;
+  const provider = createAIProvider("openai");
+  const deterministicReview = buildResumeReview(context);
+  const requestMetadata: AIRequestMetadata[] = [];
+  const call = () => provider.reviewResume({
+    reviewMode: context.reviewMode,
+    reviewContext: aiReviewContext(context, deterministicReview),
+    pdfDataUrl,
+    modelName: context.configuredModel || "gpt-5.6",
+  });
+  try {
+    const result = await call();
+    requestMetadata.push(result.metadata);
+    return {
+      ...context,
+      advisory: result.data,
+      requestMetadata,
+      provider: "hybrid-openai",
+      model: result.metadata.model,
+      pdfVisualReviewed: true,
+    };
+  } catch (caught) {
+    if (caught instanceof AIProviderError) {
+      requestMetadata.push(caught.metadata);
+      if (["structured_response_rejected", "schema_rejection"].includes(caught.metadata.errorCode)) {
+        try {
+          const repaired = await call();
+          requestMetadata.push(repaired.metadata);
+          return {
+            ...context,
+            advisory: repaired.data,
+            requestMetadata,
+            provider: "hybrid-openai",
+            model: repaired.metadata.model,
+            pdfVisualReviewed: true,
+          };
+        } catch (repairCaught) {
+          if (repairCaught instanceof AIProviderError) requestMetadata.push(repairCaught.metadata);
+        }
+      }
+    }
+    return {
+      ...context,
+      requestMetadata,
+      provider: "deterministic-fallback",
+      pdfVisualReviewed: false,
+    };
+  }
 }
 
 export async function reviewResumeVersion({
@@ -1042,6 +1551,7 @@ export async function reviewResumeVersion({
   reviewMode,
   pdfPageCount,
   pdfRenderError,
+  pdfDataUrl = "",
 }: {
   repository: AppRepository;
   resumeVersionId: string;
@@ -1049,6 +1559,7 @@ export async function reviewResumeVersion({
   reviewMode: ResumeReviewMode;
   pdfPageCount?: number | null;
   pdfRenderError?: string;
+  pdfDataUrl?: string;
 }) {
   const resumeVersion = await repository.getResumeVersion(resumeVersionId);
   if (!resumeVersion) throw new Error("The selected resume version no longer exists.");
@@ -1063,7 +1574,8 @@ export async function reviewResumeVersion({
     pdfPageCount,
     pdfRenderError,
   });
-  const review = buildResumeReview(context);
+  const enrichedContext = await addProviderAdvisory(context, pdfDataUrl);
+  const review = buildResumeReview(enrichedContext);
   return repository.saveResumeReview(review);
 }
 
@@ -1071,17 +1583,32 @@ export async function improveResumeFromReview({
   repository,
   reviewId,
   renderPdf,
+  approvedProposalIds,
 }: {
   repository: AppRepository;
   reviewId: string;
   renderPdf?: RenderImprovedResumePdf;
+  approvedProposalIds: string[];
 }): Promise<ResumeImprovementResult> {
   const originalReview = await repository.getResumeReview(reviewId);
   if (!originalReview) throw new Error("The selected resume review no longer exists.");
   const sourceResume = await repository.getResumeVersion(originalReview.resumeId);
   if (!sourceResume) throw new Error("The reviewed resume no longer exists.");
-  if (sourceResume.status === "draft" && originalReview.generatedAt < sourceResume.updatedAt) {
+  if (originalReview.generatedAt < sourceResume.updatedAt) {
     throw new Error("The resume changed after this review. Run a fresh review before improving it.");
+  }
+
+  const existingRuns = await repository.listResumeImprovementRuns();
+  const parentRun = existingRuns.find((run) => run.improvedResumeId === sourceResume.id);
+  const passNumber = (parentRun?.passNumber ?? 0) + 1;
+  if (passNumber > 2) {
+    throw new Error("Resume Optimizer stops after two automatic passes. Continue with manual editing and a fresh review.");
+  }
+  if (parentRun) {
+    const parentOriginalReview = await repository.getResumeReview(parentRun.originalReviewId);
+    if (parentOriginalReview && originalReview.overallScore - parentOriginalReview.overallScore < 2) {
+      throw new Error("The previous optimizer pass produced negligible improvement. Continue with manual editing instead.");
+    }
   }
 
   const [profile, facts, items, skills] = await Promise.all([
@@ -1094,7 +1621,13 @@ export async function improveResumeFromReview({
     resume: sourceResume.contentJson,
     proposals: originalReview.recommendedChanges,
     facts,
+    skills,
+    templateSettings: sourceResume.templateSettingsJson,
+    approvedProposalIds,
   });
+  if (!safe.appliedProposalIds.length) {
+    throw new Error("Select at least one factually safe proposal before creating an improved child resume.");
+  }
   const validationJson = validateResumeClaims({
     resume: safe.resume,
     facts,
@@ -1102,7 +1635,7 @@ export async function improveResumeFromReview({
     skills,
     profile,
   });
-  const improvedResume = await repository.saveResumeVersion({
+  let improvedResume = await repository.saveResumeVersion({
     jobId: originalReview.jobId ?? sourceResume.jobId,
     name: `${sourceResume.name} - optimized`,
     kind: "tailored",
@@ -1114,11 +1647,11 @@ export async function improveResumeFromReview({
     parentResumeVersionId: sourceResume.id,
     baseResumeVersionId: sourceResume.kind === "master" ? sourceResume.id : sourceResume.baseResumeVersionId || sourceResume.id,
     generationProvider: "deterministic",
-    generationModel: "resume-review-optimizer-v1",
-    promptVersion: "resume-review-optimizer-v1",
+    generationModel: "resume-review-optimizer-v2",
+    promptVersion: "resume-review-optimizer-v2",
     promptVersionsJson: sourceResume.promptVersionsJson,
     layoutProfileId: sourceResume.layoutProfileId,
-    templateSettingsJson: sourceResume.templateSettingsJson,
+    templateSettingsJson: safe.templateSettings,
     generationMetadataJson: {
       calls: [],
       repairAttempted: false,
@@ -1132,27 +1665,50 @@ export async function improveResumeFromReview({
   let pdfStatus: ResumeImprovementRun["pdfStatus"] = "not_rendered";
   let pdfPageCount: number | null = null;
   let pdfError = "";
+  let pdfDataUrl = "";
+  let pdfPath = "";
   if (renderPdf) {
     try {
       const rendered = await renderPdf(improvedResume.contentJson, improvedResume.templateSettingsJson);
       pdfStatus = "rendered";
       pdfPageCount = rendered.pageCount;
+      pdfDataUrl = rendered.pdfDataUrl ?? "";
+      pdfPath = rendered.pdfPath ?? "";
+      if (pdfPath) {
+        improvedResume = await repository.saveResumeVersion({
+          ...improvedResume,
+          lastExportPath: pdfPath,
+        });
+      }
     } catch (caught) {
       pdfStatus = "failed";
       pdfError = caught instanceof Error ? caught.message : String(caught);
     }
   }
 
-  const context = await reviewContextForRepository({
+  const improvedReview = await reviewResumeVersion({
     repository,
-    resumeVersion: improvedResume,
+    resumeVersionId: improvedResume.id,
     jobId: originalReview.jobId,
     reviewMode: originalReview.reviewMode,
     pdfPageCount,
     pdfRenderError: pdfError,
+    pdfDataUrl,
   });
-  const improvedReview = await repository.saveResumeReview(buildResumeReview(context));
   const diff = semanticResumeDiff(sourceResume.contentJson, improvedResume.contentJson);
+  const approved = new Set(approvedProposalIds);
+  const rejectedProposalIds = originalReview.recommendedChanges
+    .filter((item) => item.safety === "safe" && !approved.has(item.id))
+    .map((item) => item.id);
+  const scoreDelta = improvedReview.overallScore - originalReview.overallScore;
+  const hasFurtherSafeChanges = improvedReview.recommendedChanges.some((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired);
+  const stopReason: ResumeImprovementRun["stopReason"] = passNumber >= 2
+    ? "maximum_passes"
+    : scoreDelta < 2
+      ? "negligible_improvement"
+      : hasFurtherSafeChanges
+        ? ""
+        : "no_safe_changes";
   const run: ResumeImprovementRun = await repository.saveResumeImprovementRun({
     id: createId("resume-improvement-run"),
     sourceResumeId: sourceResume.id,
@@ -1163,10 +1719,14 @@ export async function improveResumeFromReview({
     improvedReviewId: improvedReview.id,
     appliedProposalIds: safe.appliedProposalIds,
     skippedProposalIds: safe.skippedProposalIds,
+    rejectedProposalIds,
     diff,
     pdfStatus,
     pdfPageCount,
     pdfError,
+    pdfPath,
+    passNumber,
+    stopReason,
     createdAt: nowIso(),
   });
 

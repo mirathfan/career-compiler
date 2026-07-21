@@ -7,9 +7,11 @@ import type {
   ResumeGenerationRequest,
   ResumePlan,
   ResumeBullet,
+  ResumeReviewMode,
   TailoredResume,
   ValidationIssue,
 } from "../../types/domain";
+import type { ResumeReviewAdvisory } from "../../schemas/resumeReview";
 
 export interface AnalyzeJobInput {
   company: string;
@@ -45,6 +47,13 @@ export interface ExtractCareerInformationInput {
   modelName: string;
 }
 
+export interface ReviewResumeInput {
+  reviewMode: ResumeReviewMode;
+  reviewContext: unknown;
+  pdfDataUrl: string;
+  modelName: string;
+}
+
 export interface AIProvider {
   readonly mode: AIProviderMode;
   analyzeJob(input: AnalyzeJobInput): Promise<AIProviderResult<JobAnalysis>>;
@@ -53,6 +62,7 @@ export interface AIProvider {
   repairResume(input: RepairResumeInput): Promise<AIProviderResult<TailoredResume>>;
   shortenBullet(input: ShortenBulletInput): Promise<AIProviderResult<ResumeBullet>>;
   extractCareerInformation(input: ExtractCareerInformationInput): Promise<AIProviderResult<CareerImportProposal>>;
+  reviewResume(input: ReviewResumeInput): Promise<AIProviderResult<ResumeReviewAdvisory>>;
 }
 
 export class AIProviderError extends Error {

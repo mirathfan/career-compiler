@@ -79,8 +79,12 @@ export function semanticResumeDiff(before: TailoredResume, after: TailoredResume
     }
   }
 
-  const oldSkills = before.skills.join(" | ");
-  const newSkills = after.skills.join(" | ");
+  const oldSkills = before.skillGroups?.length
+    ? before.skillGroups.map((group) => `${group.name}: ${group.skills.join(", ")}`).join(" | ")
+    : before.skills.join(" | ");
+  const newSkills = after.skillGroups?.length
+    ? after.skillGroups.map((group) => `${group.name}: ${group.skills.join(", ")}`).join(" | ")
+    : after.skills.join(" | ");
   if (oldSkills !== newSkills) {
     entries.push({
       category: "skills_changed",

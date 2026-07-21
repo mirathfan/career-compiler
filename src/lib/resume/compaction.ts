@@ -14,8 +14,11 @@ function estimatedLines(resume: TailoredResume) {
     (total, line) => total + Math.max(1, Math.ceil(line.length / charsPerLine)),
     0,
   );
+  const groupedSkillLines = resume.skillGroups?.filter((group) => group.skills.length).length ?? 0;
   const skillLines = resume.skills.length === 0
     ? 0
+    : groupedSkillLines
+      ? groupedSkillLines
     : resume.layout.condensedSkills
       ? Math.ceil(resume.skills.join(" | ").length / charsPerLine)
       : Math.ceil(resume.skills.join(" | ").length / Math.floor(charsPerLine * 0.82));

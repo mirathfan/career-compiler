@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { Link, useSearchParams } from "react-router-dom";
@@ -71,7 +71,7 @@ function FindingList({ title, findings }: { title: string; findings: ResumeRevie
     <div>
       <p className="text-sm font-semibold text-slate-950">{title}</p>
       <div className="mt-2 max-h-48 space-y-2 overflow-auto">
-        {findings.slice(0, 6).map((finding) => (
+        {findings.map((finding) => (
           <div key={finding.id} className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs leading-5 text-slate-700">
             <p className="font-semibold text-slate-900">{finding.category}</p>
             <p>{finding.message}</p>
@@ -87,15 +87,20 @@ function FindingList({ title, findings }: { title: string; findings: ResumeRevie
 function ReviewSummary({
   review,
   onImprove,
+  approvedProposalIds,
+  onProposalApprovalChange,
   improving,
   stale,
 }: {
   review: ResumeReview;
   onImprove: () => void;
+  approvedProposalIds: string[];
+  onProposalApprovalChange: (proposalId: string, approved: boolean) => void;
   improving: boolean;
   stale: boolean;
 }) {
-  const safeChanges = review.recommendedChanges.filter((change) => change.safety === "safe").length;
+  const safeChanges = review.recommendedChanges.filter((change) => change.safety === "safe" && change.safeToAutoApply && !change.confirmationRequired).length;
+  const totalTokens = review.requestMetadata.reduce((total, call) => total + (call.totalTokens ?? 0), 0);
   return (
     <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -105,16 +110,19 @@ function ReviewSummary({
           <p className="mt-1 text-xs text-slate-500">
             Risk {review.factualRiskLevel} | {review.readyToSubmit ? "ready to submit" : "not ready yet"} | {new Date(review.generatedAt).toLocaleString()}
           </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {review.reviewSource === "hybrid" ? "OpenAI + local checks" : "Local checks only"} | {review.model} | PDF {review.pdfVisualReviewed ? "visually reviewed" : "not visually reviewed"}{totalTokens ? ` | ${totalTokens.toLocaleString()} tokens` : ""}
+          </p>
         </div>
         <button
           className="button button-primary"
           type="button"
-          disabled={!safeChanges || improving || stale}
+          disabled={!safeChanges || !approvedProposalIds.length || improving || stale}
           onClick={onImprove}
           title={stale ? "Run a fresh review after the latest resume edit." : safeChanges ? "Create optimized child resume" : "No safe automatic changes are available."}
         >
           <WandSparkles size={15} />
-          {improving ? "Improving..." : "Improve Resume"}
+          {improving ? "Improving..." : "Improve with approval"}
         </button>
       </div>
       <div className="mt-4 grid gap-2 md:grid-cols-4">
@@ -134,13 +142,25 @@ function ReviewSummary({
       <div className="mt-4">
         <p className="text-sm font-semibold text-slate-950">Recommended changes</p>
         <div className="mt-2 grid gap-2 md:grid-cols-2">
-          {review.recommendedChanges.slice(0, 8).map((change) => (
+          {review.recommendedChanges.map((change) => (
             <div key={change.id} className="rounded-md border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700">
               <div className="flex items-start justify-between gap-2">
-                <p className="font-semibold text-slate-900">{change.title}</p>
+                <label className="flex min-w-0 items-start gap-2 font-semibold text-slate-900">
+                  {change.safety === "safe" && change.safeToAutoApply && !change.confirmationRequired ? (
+                    <input
+                      className="mt-1"
+                      type="checkbox"
+                      checked={approvedProposalIds.includes(change.id)}
+                      onChange={(event) => onProposalApprovalChange(change.id, event.target.checked)}
+                    />
+                  ) : null}
+                  <span>{change.title}</span>
+                </label>
                 <Badge tone={safetyTone(change.safety)}>{change.safety.replace("_", " ")}</Badge>
               </div>
               <p className="mt-1">{change.rationale}</p>
+              <p className="mt-1 text-slate-500">{change.category} | {change.priority} priority | expected +{change.expectedScoreImpact} | {change.confirmationRequired ? "confirmation required" : "approved safe operation"}</p>
+              {change.evidence.length ? <p className="mt-1 line-clamp-2 text-slate-500">Evidence: {change.evidence.join("; ")}</p> : null}
               {change.before ? <p className="mt-2 line-clamp-2 text-red-700">Before: {change.before}</p> : null}
               {change.after ? <p className="line-clamp-2 text-emerald-700">After: {change.after}</p> : null}
             </div>
@@ -172,7 +192,7 @@ function ImprovementSummary({
   canApprove: boolean;
 }) {
   const delta = result.improvedReview.overallScore - result.originalReview.overallScore;
-  const hasAnotherSafePass = result.improvedReview.recommendedChanges.some((change) => change.safety === "safe");
+  const hasAnotherSafePass = !result.run.stopReason && result.run.passNumber < 2 && delta >= 2 && result.improvedReview.recommendedChanges.some((change) => change.safety === "safe" && change.safeToAutoApply && !change.confirmationRequired);
   return (
     <PageSection
       title="Optimizer result"
@@ -189,6 +209,7 @@ function ImprovementSummary({
       }
     >
       {result.run.pdfError ? <AlertBanner tone="amber" title="PDF render warning">{result.run.pdfError}</AlertBanner> : null}
+      {result.run.stopReason ? <AlertBanner tone="slate" title="Automatic optimization stopped">{result.run.stopReason.replaceAll("_", " ")}.</AlertBanner> : null}
       <div className="grid gap-3 md:grid-cols-3">
         <StatCard label="Original score" value={result.originalReview.overallScore} detail={result.sourceResume.name} icon={Gauge} />
         <StatCard label="Improved score" value={result.improvedReview.overallScore} detail={delta >= 0 ? `+${delta} points` : `${delta} points`} icon={TrendingUp} tone={delta >= 0 ? "emerald" : "amber"} />
@@ -226,7 +247,7 @@ function ImprovementSummary({
         <button className="button" type="button" disabled={busy} onClick={onRestore}>
           <RotateCcw size={15} /> Restore original
         </button>
-        <button className="button" type="button" disabled={busy || !hasAnotherSafePass} onClick={onAnotherPass} title={hasAnotherSafePass ? "Create another optimized child version" : "No additional safe automatic changes are available."}>
+        <button className="button" type="button" disabled={busy || !hasAnotherSafePass} onClick={onAnotherPass} title={hasAnotherSafePass ? "Create another optimized child version" : "Optimizer stopped because no material safe pass remains or the two-pass limit was reached."}>
           <RefreshCcw size={15} /> Run another pass
         </button>
       </div>
@@ -244,6 +265,7 @@ export function ResumeLibraryPage() {
   const [refreshAnalysis, setRefreshAnalysis] = useState(false);
   const [regenerationResult, setRegenerationResult] = useState<RegenerationResult | null>(null);
   const [activeReview, setActiveReview] = useState<ResumeReview | null>(null);
+  const [approvedProposalIds, setApprovedProposalIds] = useState<string[]>([]);
   const [improvementResult, setImprovementResult] = useState<ResumeImprovementResult | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("active");
@@ -377,10 +399,12 @@ export function ResumeLibraryPage() {
       if (!resume) throw new Error("Resume version not found.");
       let pdfPageCount: number | null = null;
       let pdfRenderError = "";
+      let pdfDataUrl = "";
       try {
-        const { countPdfPages, renderResumePdfBytes } = await import("../../lib/resume/pdf");
+        const { countPdfPages, pdfBytesToDataUrl, renderResumePdfBytes } = await import("../../lib/resume/pdf");
         const bytes = await renderResumePdfBytes(resume.contentJson, resume.templateSettingsJson);
         pdfPageCount = await countPdfPages(bytes);
+        pdfDataUrl = pdfBytesToDataUrl(bytes);
       } catch (caught) {
         pdfRenderError = caught instanceof Error ? caught.message : String(caught);
       }
@@ -391,25 +415,36 @@ export function ResumeLibraryPage() {
         reviewMode,
         pdfPageCount,
         pdfRenderError,
+        pdfDataUrl,
       });
     },
     onSuccess: (review) => {
       setActiveReview(review);
       setImprovementResult(null);
       setOpenResumeId(review.resumeId);
+      setApprovedProposalIds(review.recommendedChanges.filter((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired).map((item) => item.id));
       queryClient.invalidateQueries({ queryKey: ["resume-reviews"] });
     },
     onError: (caught) => setError(caught instanceof Error ? caught.message : String(caught)),
   });
   const improveReview = useMutation({
-    mutationFn: (reviewId: string) =>
+    mutationFn: ({ reviewId, proposalIds }: { reviewId: string; proposalIds: string[] }) =>
       improveResumeFromReview({
         repository,
         reviewId,
+        approvedProposalIds: proposalIds,
         renderPdf: async (resume, templateSettings) => {
-          const { countPdfPages, renderResumePdfBytes } = await import("../../lib/resume/pdf");
+          const { countPdfPages, pdfBytesToDataUrl, renderResumePdfBytes } = await import("../../lib/resume/pdf");
           const bytes = await renderResumePdfBytes(resume, templateSettings);
-          return { pageCount: await countPdfPages(bytes) };
+          const pdfPath = await invoke<string>("write_generated_resume_pdf", {
+            fileStem: `${resume.id}-optimized`,
+            bytes: Array.from(bytes),
+          });
+          return {
+            pageCount: await countPdfPages(bytes),
+            pdfDataUrl: pdfBytesToDataUrl(bytes),
+            pdfPath,
+          };
         },
       }),
     onSuccess: (result) => {
@@ -417,6 +452,7 @@ export function ResumeLibraryPage() {
       setActiveReview(result.improvedReview);
       setOpenResumeId(result.improvedResume.id);
       setReviewResumeId(result.improvedResume.id);
+      setApprovedProposalIds(result.improvedReview.recommendedChanges.filter((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired).map((item) => item.id));
       queryClient.invalidateQueries();
     },
     onError: (caught) => setError(caught instanceof Error ? caught.message : String(caught)),
@@ -428,7 +464,7 @@ export function ResumeLibraryPage() {
       const latestReview = (await repository.listResumeReviews(resumeId))
         .filter((review) => review.resumeId === resumeId)
         .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0];
-      if (!latestReview || (resume.status === "draft" && latestReview.generatedAt < resume.updatedAt)) {
+      if (!latestReview || latestReview.generatedAt < resume.updatedAt) {
         throw new Error("Run a fresh review after the latest resume edit before approval.");
       }
       if (!latestReview.readyToSubmit) {
@@ -497,10 +533,21 @@ export function ResumeLibraryPage() {
     return map;
   }, [improvementRunsQuery.data]);
   const selectedResume = (resumesQuery.data ?? []).find((resume) => resume.id === reviewResumeId) ?? null;
-  const latestSelectedReview = reviewResumeId ? latestReviewByResume.get(reviewResumeId) ?? null : null;
-  const selectedReview = activeReview?.resumeId === reviewResumeId ? activeReview : latestSelectedReview;
+  const matchesReviewSelection = (review: ResumeReview) =>
+    review.resumeId === reviewResumeId &&
+    review.reviewMode === reviewMode &&
+    (review.jobId ?? "") === (reviewMode === "general" ? "" : reviewJobId);
+  const latestSelectedReview = (reviewsQuery.data ?? [])
+    .filter(matchesReviewSelection)
+    .sort((left, right) => right.generatedAt.localeCompare(left.generatedAt))[0] ?? null;
+  const selectedReview = activeReview && matchesReviewSelection(activeReview) ? activeReview : latestSelectedReview;
+  useEffect(() => {
+    setApprovedProposalIds(selectedReview?.recommendedChanges
+      .filter((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired)
+      .map((item) => item.id) ?? []);
+  }, [selectedReview]);
   const selectedReviewIsStale = Boolean(
-    selectedResume && selectedReview && selectedResume.status === "draft" && selectedReview.generatedAt < selectedResume.updatedAt,
+    selectedResume && selectedReview && selectedReview.generatedAt < selectedResume.updatedAt,
   );
   const selectedImprovementResult = useMemo<ResumeImprovementResult | null>(() => {
     if (improvementResult?.improvedResume.id === reviewResumeId) return improvementResult;
@@ -676,8 +723,8 @@ export function ResumeLibraryPage() {
                   const nextId = event.target.value;
                   const resume = (resumesQuery.data ?? []).find((item) => item.id === nextId);
                   setReviewResumeId(nextId);
-                  setReviewJobId(reviewMode === "general" ? "" : resume?.jobId ?? "");
-                  setActiveReview(nextId ? latestReviewByResume.get(nextId) ?? null : null);
+                  setReviewJobId(reviewMode === "general" || resume?.kind === "master" ? "" : resume?.jobId ?? "");
+                  setActiveReview(null);
                   setImprovementResult(null);
                 }}
               >
@@ -696,10 +743,12 @@ export function ResumeLibraryPage() {
                 onChange={(event) => {
                   const nextMode = event.target.value as ResumeReviewMode;
                   setReviewMode(nextMode);
+                  setActiveReview(null);
+                  setImprovementResult(null);
                   if (nextMode === "general") {
                     setReviewJobId("");
                   } else if (!reviewJobId) {
-                    setReviewJobId(selectedResume?.jobId ?? "");
+                    setReviewJobId(selectedResume?.kind === "master" ? "" : selectedResume?.jobId ?? "");
                   }
                 }}
               >
@@ -750,9 +799,13 @@ export function ResumeLibraryPage() {
               review={selectedReview}
               stale={selectedReviewIsStale}
               improving={improveReview.isPending}
+              approvedProposalIds={approvedProposalIds}
+              onProposalApprovalChange={(proposalId, approved) => setApprovedProposalIds((current) => approved
+                ? [...new Set([...current, proposalId])]
+                : current.filter((id) => id !== proposalId))}
               onImprove={() => {
                 setError("");
-                improveReview.mutate(selectedReview.id);
+                improveReview.mutate({ reviewId: selectedReview.id, proposalIds: approvedProposalIds });
               }}
             />
           ) : (
@@ -778,6 +831,7 @@ export function ResumeLibraryPage() {
                 setOpenResumeId(selectedImprovementResult.sourceResume.id);
                 setReviewResumeId(selectedImprovementResult.sourceResume.id);
                 setActiveReview(selectedImprovementResult.originalReview);
+                setApprovedProposalIds(selectedImprovementResult.originalReview.recommendedChanges.filter((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired).map((item) => item.id));
                 setImprovementResult(null);
               },
             })}
@@ -787,11 +841,12 @@ export function ResumeLibraryPage() {
                 setOpenResumeId(selectedImprovementResult.sourceResume.id);
                 setReviewResumeId(selectedImprovementResult.sourceResume.id);
                 setActiveReview(selectedImprovementResult.originalReview);
+                setApprovedProposalIds(selectedImprovementResult.originalReview.recommendedChanges.filter((item) => item.safety === "safe" && item.safeToAutoApply && !item.confirmationRequired).map((item) => item.id));
                 setImprovementResult(null);
                 return queryClient.invalidateQueries();
               }).catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
             }}
-            onAnotherPass={() => improveReview.mutate(selectedImprovementResult.improvedReview.id)}
+            onAnotherPass={() => improveReview.mutate({ reviewId: selectedImprovementResult.improvedReview.id, proposalIds: approvedProposalIds })}
           />
         ) : null}
 
@@ -915,8 +970,8 @@ export function ResumeLibraryPage() {
                       type="button"
                       onClick={() => {
                         setReviewResumeId(resume.id);
-                        setReviewJobId(reviewMode === "general" ? "" : resume.jobId);
-                        setActiveReview(latestReview ?? null);
+                        setReviewJobId(reviewMode === "general" || resume.kind === "master" ? "" : resume.jobId);
+                        setActiveReview(null);
                         setImprovementResult(null);
                         setOpenResumeId(resume.id);
                       }}

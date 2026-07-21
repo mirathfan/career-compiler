@@ -66,7 +66,15 @@ export function ResumePreview({ resume, validationIssues, pageCount }: {
       );
     }
     if (section === "skills" && resume.skills.length) {
-      return <PreviewSection key={section} title="Skills"><p className="mt-2">{resume.skills.join(" | ")}</p></PreviewSection>;
+      return (
+        <PreviewSection key={section} title="Skills">
+          {resume.skillGroups?.length
+            ? resume.skillGroups.map((group) => (
+                <p className="mt-1" key={group.id}><strong>{group.name}:</strong> {group.skills.join(", ")}</p>
+              ))
+            : <p className="mt-2">{resume.skills.join(" | ")}</p>}
+        </PreviewSection>
+      );
     }
     return null;
   };

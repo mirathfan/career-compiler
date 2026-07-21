@@ -88,7 +88,7 @@ export function resumeDocumentFromTailoredResume({
     experience: resume.experience.map(convertExperience),
     projects: resume.projects.map(convertProject),
     education: resume.education,
-    skills: skillGroupsFromFlatSkills(resume.skills),
+    skills: resume.skillGroups?.length ? structuredClone(resume.skillGroups) : skillGroupsFromFlatSkills(resume.skills),
     additionalSections: [],
     sectionOrder: resume.sectionOrder,
     createdAt,

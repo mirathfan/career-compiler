@@ -43,6 +43,9 @@ const itemSectionSchema = z.object({
   startDate: z.string(),
   endDate: z.string(),
   isCurrent: z.boolean(),
+  technologies: z.array(z.string()).optional(),
+  url: z.string().optional(),
+  repositoryUrl: z.string().optional(),
   locked: z.boolean(),
   bullets: z.array(ResumeBulletSchema),
 });
@@ -73,6 +76,7 @@ export const TailoredResumeSchema = z.object({
   experience: z.array(itemSectionSchema),
   projects: z.array(itemSectionSchema),
   skills: z.array(z.string()),
+  skillGroups: z.array(z.object({ id: z.string(), name: z.string(), skills: z.array(z.string()) })).optional(),
   sectionOrder: z.array(sectionNameSchema),
   compactionActions: z.array(z.string()),
   layout: z.object({

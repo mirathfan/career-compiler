@@ -50,6 +50,7 @@ import { buildSearchDocuments } from "../search/documentModel";
 import { deterministicSearch } from "../search/text";
 import { applyCareerImportToState } from "./careerImportPersistence";
 import { createCareerMemoryExportProposal } from "../import/careerIntake";
+import { normalizeStoredJobAnalysis } from "./jobAnalysis";
 import { migrations } from "./migrations";
 import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSkills } from "./seed";
 import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
@@ -273,7 +274,7 @@ function mapApprovedApplicationAnswer(row: Row): ApprovedApplicationAnswer {
 }
 
 function mapJob(row: Row): Job {
-  const analysis = row.analysis_json ? JSON.parse(asString(row.analysis_json)) : null;
+  const analysis = normalizeStoredJobAnalysis(parseJson(row.analysis_json, null));
   return {
     id: asString(row.id),
     company: asString(row.company),
@@ -498,6 +499,10 @@ function mapResumeReview(row: Row): ResumeReview {
     generatedAt: asString(row.generated_at),
     provider: asString(row.provider),
     model: asString(row.model),
+    reviewSource: (asString(row.review_source) || "deterministic") as ResumeReview["reviewSource"],
+    pdfPageCount: row.pdf_page_count === null || row.pdf_page_count === undefined ? null : Number(row.pdf_page_count),
+    pdfVisualReviewed: asBool(row.pdf_visual_reviewed),
+    requestMetadata: parseJson(row.request_metadata_json, []) as ResumeReview["requestMetadata"],
   };
 }
 
@@ -512,12 +517,16 @@ function mapResumeImprovementRun(row: Row): ResumeImprovementRun {
     improvedReviewId: asString(row.improved_review_id),
     appliedProposalIds: parseArray(row.applied_proposal_ids_json),
     skippedProposalIds: parseArray(row.skipped_proposal_ids_json),
+    rejectedProposalIds: parseArray(row.rejected_proposal_ids_json),
     diff: parseJson(row.diff_json, []) as ResumeImprovementRun["diff"],
     pdfStatus: row.pdf_status as ResumeImprovementRun["pdfStatus"],
     pdfPageCount: row.pdf_page_count === null || row.pdf_page_count === undefined
       ? null
       : Number(row.pdf_page_count),
     pdfError: asString(row.pdf_error),
+    pdfPath: asString(row.pdf_path),
+    passNumber: Number(row.pass_number ?? 1),
+    stopReason: asString(row.stop_reason) as ResumeImprovementRun["stopReason"],
     createdAt: asString(row.created_at),
   };
 }
@@ -2444,8 +2453,9 @@ export class SqliteRepository implements AppRepository {
       `INSERT INTO resume_reviews (
         id, resume_id, job_id, review_mode, overall_score, category_scores_json,
         strengths_json, weaknesses_json, critical_issues_json, recommended_changes_json,
-        factual_risk_level, ready_to_submit, generated_at, provider, model
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        factual_risk_level, ready_to_submit, generated_at, provider, model, review_source,
+        pdf_page_count, pdf_visual_reviewed, request_metadata_json
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       ON CONFLICT(id) DO UPDATE SET
         resume_id = excluded.resume_id,
         job_id = excluded.job_id,
@@ -2460,7 +2470,11 @@ export class SqliteRepository implements AppRepository {
         ready_to_submit = excluded.ready_to_submit,
         generated_at = excluded.generated_at,
         provider = excluded.provider,
-        model = excluded.model`,
+        model = excluded.model,
+        review_source = excluded.review_source,
+        pdf_page_count = excluded.pdf_page_count,
+        pdf_visual_reviewed = excluded.pdf_visual_reviewed,
+        request_metadata_json = excluded.request_metadata_json`,
       [
         review.id,
         review.resumeId,
@@ -2477,6 +2491,10 @@ export class SqliteRepository implements AppRepository {
         review.generatedAt,
         review.provider,
         review.model,
+        review.reviewSource ?? "deterministic",
+        review.pdfPageCount ?? null,
+        review.pdfVisualReviewed ? 1 : 0,
+        JSON.stringify(review.requestMetadata ?? []),
       ],
     );
     return review;
@@ -2498,9 +2516,10 @@ export class SqliteRepository implements AppRepository {
     await this.db.execute(
       `INSERT INTO resume_improvement_runs (
         id, source_resume_id, improved_resume_id, job_id, review_mode, original_review_id,
-        improved_review_id, applied_proposal_ids_json, skipped_proposal_ids_json, diff_json,
-        pdf_status, pdf_page_count, pdf_error, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        improved_review_id, applied_proposal_ids_json, skipped_proposal_ids_json,
+        rejected_proposal_ids_json, diff_json, pdf_status, pdf_page_count, pdf_error,
+        pdf_path, pass_number, stop_reason, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       ON CONFLICT(id) DO UPDATE SET
         source_resume_id = excluded.source_resume_id,
         improved_resume_id = excluded.improved_resume_id,
@@ -2510,10 +2529,14 @@ export class SqliteRepository implements AppRepository {
         improved_review_id = excluded.improved_review_id,
         applied_proposal_ids_json = excluded.applied_proposal_ids_json,
         skipped_proposal_ids_json = excluded.skipped_proposal_ids_json,
+        rejected_proposal_ids_json = excluded.rejected_proposal_ids_json,
         diff_json = excluded.diff_json,
         pdf_status = excluded.pdf_status,
         pdf_page_count = excluded.pdf_page_count,
         pdf_error = excluded.pdf_error,
+        pdf_path = excluded.pdf_path,
+        pass_number = excluded.pass_number,
+        stop_reason = excluded.stop_reason,
         created_at = excluded.created_at`,
       [
         run.id,
@@ -2525,10 +2548,14 @@ export class SqliteRepository implements AppRepository {
         run.improvedReviewId,
         JSON.stringify(run.appliedProposalIds),
         JSON.stringify(run.skippedProposalIds),
+        JSON.stringify(run.rejectedProposalIds ?? []),
         JSON.stringify(run.diff),
         run.pdfStatus,
         run.pdfPageCount,
         run.pdfError,
+        run.pdfPath ?? "",
+        run.passNumber ?? 1,
+        run.stopReason ?? "",
         run.createdAt,
       ],
     );

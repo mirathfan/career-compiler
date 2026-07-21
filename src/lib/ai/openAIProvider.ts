@@ -4,6 +4,7 @@ import {
   careerImportProposalJsonSchema,
 } from "../../schemas/careerImport";
 import { JobAnalysisSchema, jobAnalysisJsonSchema } from "../../schemas/jobAnalysis";
+import { ResumeReviewAdvisorySchema, resumeReviewAdvisoryJsonSchema } from "../../schemas/resumeReview";
 import {
   ResumePlanSchema,
   ResumeBulletSchema,
@@ -25,6 +26,7 @@ import {
   RESUME_GENERATION_PROMPT,
   RESUME_PLAN_PROMPT,
   RESUME_REPAIR_PROMPT,
+  RESUME_REVIEW_PROMPT,
 } from "./prompts";
 import {
   AIProviderError,
@@ -34,6 +36,7 @@ import {
   type GenerateResumeInput,
   type PlanResumeInput,
   type RepairResumeInput,
+  type ReviewResumeInput,
   type ShortenBulletInput,
 } from "./provider";
 
@@ -53,6 +56,7 @@ interface StructuredCall<T> {
   schemaName: string;
   schema: unknown;
   parse: (value: unknown) => T;
+  pdfDataUrl?: string;
 }
 
 function failedMetadata(model: string, requestType: AIRequestType, durationMs: number, errorCode: string): AIRequestMetadata {
@@ -91,6 +95,7 @@ export class OpenAIProvider implements AIProvider {
           input: call.input,
           schemaName: call.schemaName,
           schema: call.schema,
+          pdfDataUrl: call.pdfDataUrl,
         },
       });
     } catch (caught) {
@@ -212,6 +217,23 @@ export class OpenAIProvider implements AIProvider {
       schemaName: "career_import_proposal",
       schema: careerImportProposalJsonSchema,
       parse: (value) => CareerImportProposalSchema.parse(value),
+    });
+  }
+
+  reviewResume(input: ReviewResumeInput) {
+    return this.callStructured({
+      model: input.modelName,
+      requestType: "resume_review",
+      instructions: RESUME_REVIEW_PROMPT,
+      input: {
+        promptVersion: PROMPT_VERSIONS.resumeReview,
+        reviewMode: input.reviewMode,
+        reviewContext: input.reviewContext,
+      },
+      pdfDataUrl: input.pdfDataUrl,
+      schemaName: "resume_review_advisory",
+      schema: resumeReviewAdvisoryJsonSchema,
+      parse: (value) => ResumeReviewAdvisorySchema.parse(value),
     });
   }
 }

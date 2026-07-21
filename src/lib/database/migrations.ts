@@ -528,4 +528,19 @@ export const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_resume_improvement_runs_improved ON resume_improvement_runs(improved_resume_id, created_at);
     `,
   },
+  {
+    id: 8,
+    name: "resume_review_provider_audit",
+    sql: `
+      ALTER TABLE resume_reviews ADD COLUMN review_source TEXT NOT NULL DEFAULT 'deterministic' CHECK(review_source IN ('deterministic','hybrid'));
+      ALTER TABLE resume_reviews ADD COLUMN pdf_page_count INTEGER;
+      ALTER TABLE resume_reviews ADD COLUMN pdf_visual_reviewed INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE resume_reviews ADD COLUMN request_metadata_json TEXT NOT NULL DEFAULT '[]';
+
+      ALTER TABLE resume_improvement_runs ADD COLUMN rejected_proposal_ids_json TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE resume_improvement_runs ADD COLUMN pdf_path TEXT NOT NULL DEFAULT '';
+      ALTER TABLE resume_improvement_runs ADD COLUMN pass_number INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE resume_improvement_runs ADD COLUMN stop_reason TEXT NOT NULL DEFAULT '' CHECK(stop_reason IN ('','no_safe_changes','negligible_improvement','maximum_passes'));
+    `,
+  },
 ];

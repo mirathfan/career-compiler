@@ -23,3 +23,12 @@ export async function countPdfPages(bytes: Uint8Array) {
   const document = await PDFDocument.load(bytes);
   return document.getPageCount();
 }
+
+export function pdfBytesToDataUrl(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 32_768;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return `data:application/pdf;base64,${btoa(binary)}`;
+}

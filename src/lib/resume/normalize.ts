@@ -55,6 +55,7 @@ export function normalizeTailoredResume(value: unknown): TailoredResume {
         startDate: String(section.startDate ?? ""),
         endDate: String(section.endDate ?? ""),
         isCurrent: Boolean(section.isCurrent),
+        technologies: Array.isArray(section.technologies) ? section.technologies.map(String) : undefined,
         url: section.url ? String(section.url) : undefined,
         repositoryUrl: section.repositoryUrl ? String(section.repositoryUrl) : undefined,
         locked: Boolean(section.locked),
@@ -90,6 +91,16 @@ export function normalizeTailoredResume(value: unknown): TailoredResume {
     experience: normalizeSections(resume.experience),
     projects: normalizeSections(resume.projects),
     skills: Array.isArray(resume.skills) ? resume.skills.map(String) : [],
+    skillGroups: Array.isArray(resume.skillGroups)
+      ? resume.skillGroups.map((groupValue) => {
+          const group = asRecord(groupValue);
+          return {
+            id: String(group.id ?? ""),
+            name: String(group.name ?? ""),
+            skills: Array.isArray(group.skills) ? group.skills.map(String) : [],
+          };
+        }).filter((group) => group.name && group.skills.length)
+      : undefined,
     sectionOrder: Array.isArray(resume.sectionOrder)
       ? (resume.sectionOrder as TailoredResume["sectionOrder"])
       : ["summary", "projects", "experience", "education", "skills"],

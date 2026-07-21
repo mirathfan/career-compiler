@@ -89,6 +89,13 @@ function sectionBody(
     return `\\resumesection{Projects}\n${resume.projects.map((item) => careerSection(item, settings)).join("\n")}`;
   }
   if (section === "skills" && resume.skills.length > 0) {
+    if (resume.skillGroups?.length) {
+      const groups = resume.skillGroups
+        .filter((group) => group.skills.length)
+        .map((group) => `{\\bfseries ${escapeLatex(group.name)}:} ${group.skills.map(escapeLatex).join(", ")}\\par`)
+        .join("\n");
+      return `\\resumesection{Skills}\n${resume.layout.condensedSkills ? "{\\small " : ""}${groups}${resume.layout.condensedSkills ? "}" : ""}`;
+    }
     const skills = resume.skills.map(escapeLatex).join("~{\\color{ResumeMuted}|}\\allowbreak{} ");
     return `\\resumesection{Skills}\n${resume.layout.condensedSkills ? "{\\small " : ""}${skills}${resume.layout.condensedSkills ? "}" : ""}\\par`;
   }

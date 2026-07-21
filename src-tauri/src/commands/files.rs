@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use tauri::Manager;
 
 static LATEX_RENDER_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LAST_COMPILATION: OnceLock<Mutex<CompilationRecord>> = OnceLock::new();
@@ -195,6 +196,46 @@ pub fn write_pdf_file(path: String, bytes: Vec<u8>) -> Result<(), String> {
         return Err("The PDF exceeds the 10 MB export limit.".to_string());
     }
     fs::write(&path, bytes).map_err(|error| format!("Could not write PDF: {error}"))
+}
+
+fn safe_generated_pdf_stem(value: &str) -> String {
+    let stem: String = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(96)
+        .collect();
+    if stem.trim_matches('_').is_empty() {
+        "resume-optimized".to_string()
+    } else {
+        stem
+    }
+}
+
+#[tauri::command]
+pub fn write_generated_resume_pdf(
+    app: tauri::AppHandle,
+    file_stem: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    if bytes.is_empty() || bytes.len() > 10_000_000 {
+        return Err("The generated PDF is empty or exceeds the 10 MB limit.".to_string());
+    }
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not resolve the CareerCompiler data directory.".to_string())?
+        .join("generated-resumes");
+    fs::create_dir_all(&directory)
+        .map_err(|_| "Could not prepare the generated-resumes directory.".to_string())?;
+    let path = directory.join(format!("{}.pdf", safe_generated_pdf_stem(&file_stem)));
+    fs::write(&path, bytes).map_err(|_| "Could not write the generated resume PDF.".to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -467,5 +508,14 @@ mod tests {
     fn diagnostics_redact_secrets_and_contact_data() {
         let value = redact_diagnostics("failed sk-test-secret mir@example.com network_failure");
         assert_eq!(value, "failed [REDACTED] [REDACTED] network_failure");
+    }
+
+    #[test]
+    fn generated_pdf_stems_cannot_escape_the_app_data_directory() {
+        assert_eq!(
+            safe_generated_pdf_stem("../../Private Resume: optimized"),
+            "______Private_Resume__optimized"
+        );
+        assert_eq!(safe_generated_pdf_stem(".."), "resume-optimized");
     }
 }

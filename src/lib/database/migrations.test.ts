@@ -61,6 +61,7 @@ describe("additive database migrations", () => {
     applyMigration(database, 5);
     applyMigration(database, 6);
     applyMigration(database, 7);
+    applyMigration(database, 8);
 
     expect(database.exec("SELECT statement, source_note FROM career_facts WHERE id='fact-1'")[0].values[0])
       .toEqual(["Preserve this fact.", "User note"]);
@@ -89,7 +90,7 @@ describe("additive database migrations", () => {
         "resume_improvement_runs",
       ]),
     );
-    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3], [4], [5], [6], [7]]);
+    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id")[0].values).toEqual([[1], [2], [3], [4], [5], [6], [7], [8]]);
     database.close();
   });
 
@@ -198,6 +199,7 @@ describe("additive database migrations", () => {
     applyMigration(database, 5);
     applyMigration(database, 6);
     applyMigration(database, 7);
+    applyMigration(database, 8);
 
     expect(tableNames(database)).toEqual(
       expect.arrayContaining(["resume_reviews", "resume_improvement_runs"]),
@@ -210,6 +212,8 @@ describe("additive database migrations", () => {
         "category_scores_json",
         "recommended_changes_json",
         "ready_to_submit",
+        "pdf_visual_reviewed",
+        "request_metadata_json",
       ]),
     );
     expect(columnNames(database, "resume_improvement_runs")).toEqual(
@@ -220,6 +224,9 @@ describe("additive database migrations", () => {
         "improved_review_id",
         "diff_json",
         "pdf_status",
+        "rejected_proposal_ids_json",
+        "pass_number",
+        "stop_reason",
       ]),
     );
     database.close();
