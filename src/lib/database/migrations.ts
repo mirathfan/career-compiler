@@ -543,4 +543,176 @@ export const migrations: Migration[] = [
       ALTER TABLE resume_improvement_runs ADD COLUMN stop_reason TEXT NOT NULL DEFAULT '' CHECK(stop_reason IN ('','no_safe_changes','negligible_improvement','maximum_passes'));
     `,
   },
+  {
+    id: 9,
+    name: "job_search_automation",
+    sql: `
+      CREATE TABLE IF NOT EXISTS job_sources (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        company_name TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK(source_type IN ('greenhouse','lever','ashby','manual_url','email_import')),
+        source_identifier TEXT NOT NULL,
+        careers_url TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        polling_interval_hours INTEGER NOT NULL DEFAULT 24 CHECK(polling_interval_hours BETWEEN 1 AND 720),
+        last_checked_at TEXT NOT NULL DEFAULT '',
+        last_success_at TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(source_type, source_identifier)
+      );
+
+      ALTER TABLE jobs ADD COLUMN source_id TEXT;
+      ALTER TABLE jobs ADD COLUMN external_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN normalized_title TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN description_html TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN description_text TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN location TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN normalized_location TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN workplace_type TEXT NOT NULL DEFAULT 'unspecified' CHECK(workplace_type IN ('remote','hybrid','on_site','unspecified'));
+      ALTER TABLE jobs ADD COLUMN employment_type TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN department TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN salary_min REAL;
+      ALTER TABLE jobs ADD COLUMN salary_max REAL;
+      ALTER TABLE jobs ADD COLUMN salary_currency TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN salary_interval TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN posted_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN discovered_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN application_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN canonical_url TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN content_hash TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN source_payload_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE jobs ADD COLUMN automation_status TEXT NOT NULL DEFAULT 'new' CHECK(automation_status IN ('new','filtered_out','analysis_pending','matched','saved','resume_pending','resume_ready','ready_to_apply','applied','rejected','interviewing','offer','archived','closed'));
+      ALTER TABLE jobs ADD COLUMN closed_at TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs ADD COLUMN changed_since_analysis INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS job_matches (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        deterministic_score REAL NOT NULL CHECK(deterministic_score BETWEEN 0 AND 100),
+        ai_score REAL CHECK(ai_score BETWEEN 0 AND 100),
+        combined_score REAL NOT NULL CHECK(combined_score BETWEEN 0 AND 100),
+        score_breakdown_json TEXT NOT NULL DEFAULT '{}',
+        score_reasons_json TEXT NOT NULL DEFAULT '[]',
+        hard_reject INTEGER NOT NULL DEFAULT 0,
+        hard_reject_reasons_json TEXT NOT NULL DEFAULT '[]',
+        warnings_json TEXT NOT NULL DEFAULT '[]',
+        matched_skill_ids_json TEXT NOT NULL DEFAULT '[]',
+        matched_project_ids_json TEXT NOT NULL DEFAULT '[]',
+        matched_fact_ids_json TEXT NOT NULL DEFAULT '[]',
+        missing_requirements_json TEXT NOT NULL DEFAULT '[]',
+        strengths_json TEXT NOT NULL DEFAULT '[]',
+        concerns_json TEXT NOT NULL DEFAULT '[]',
+        recommended_resume_profile TEXT NOT NULL DEFAULT '',
+        sponsorship_status TEXT NOT NULL DEFAULT 'not_mentioned' CHECK(sponsorship_status IN ('explicitly_available','explicitly_unavailable','not_mentioned','unclear')),
+        citizenship_requirement TEXT NOT NULL DEFAULT 'not_mentioned' CHECK(citizenship_requirement IN ('required','not_required','not_mentioned','unclear')),
+        experience_compatibility TEXT NOT NULL DEFAULT 'unclear' CHECK(experience_compatibility IN ('strong','moderate','weak','incompatible','unclear')),
+        location_compatibility TEXT NOT NULL DEFAULT 'unclear' CHECK(location_compatibility IN ('strong','moderate','weak','incompatible','unclear')),
+        analysis_model TEXT NOT NULL DEFAULT '',
+        analysis_prompt_version TEXT NOT NULL DEFAULT '',
+        analysis_json TEXT NOT NULL DEFAULT '{}',
+        analyzed_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS job_match_analysis_history (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        content_hash TEXT NOT NULL,
+        deterministic_score REAL NOT NULL,
+        ai_score REAL,
+        combined_score REAL NOT NULL,
+        analysis_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS job_duplicate_events (
+        id TEXT PRIMARY KEY,
+        incoming_external_id TEXT NOT NULL,
+        canonical_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        source_id TEXT NOT NULL DEFAULT '',
+        reason TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS job_search_preferences (
+        id TEXT PRIMARY KEY,
+        automation_enabled INTEGER NOT NULL DEFAULT 0,
+        preferences_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS application_packages (
+        id TEXT PRIMARY KEY,
+        job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+        resume_version_id TEXT NOT NULL DEFAULT '',
+        cover_letter_text TEXT NOT NULL DEFAULT '',
+        selected_resume_profile TEXT NOT NULL DEFAULT '',
+        generation_status TEXT NOT NULL DEFAULT 'not_started' CHECK(generation_status IN ('not_started','pending','ready','failed')),
+        validation_status TEXT NOT NULL DEFAULT 'not_validated' CHECK(validation_status IN ('not_validated','valid','invalid')),
+        validation_errors_json TEXT NOT NULL DEFAULT '[]',
+        suggested_answers_json TEXT NOT NULL DEFAULT '{}',
+        unresolved_questions_json TEXT NOT NULL DEFAULT '[]',
+        generated_at TEXT NOT NULL DEFAULT '',
+        approved_at TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS application_answer_vault (
+        id TEXT PRIMARY KEY,
+        answer_key TEXT NOT NULL UNIQUE,
+        value_json TEXT NOT NULL,
+        category TEXT NOT NULL,
+        verified INTEGER NOT NULL DEFAULT 0,
+        sensitive INTEGER NOT NULL DEFAULT 0,
+        requires_manual_confirmation INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS job_automation_runs (
+        id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        completed_at TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK(status IN ('running','completed','partial','failed')),
+        sources_checked INTEGER NOT NULL DEFAULT 0,
+        jobs_fetched INTEGER NOT NULL DEFAULT 0,
+        jobs_added INTEGER NOT NULL DEFAULT 0,
+        jobs_updated INTEGER NOT NULL DEFAULT 0,
+        jobs_deduplicated INTEGER NOT NULL DEFAULT 0,
+        jobs_filtered INTEGER NOT NULL DEFAULT 0,
+        jobs_analyzed INTEGER NOT NULL DEFAULT 0,
+        resumes_generated INTEGER NOT NULL DEFAULT 0,
+        errors_json TEXT NOT NULL DEFAULT '[]',
+        summary_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      UPDATE jobs SET
+        normalized_title = lower(trim(role_title)),
+        description_text = raw_description,
+        discovered_at = created_at,
+        last_seen_at = updated_at,
+        application_url = source_url,
+        canonical_url = source_url
+      WHERE normalized_title = '';
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_source_external ON jobs(source_id, external_id) WHERE source_id IS NOT NULL AND external_id <> '';
+      CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs(canonical_url);
+      CREATE INDEX IF NOT EXISTS idx_jobs_normalized_identity ON jobs(company, normalized_title, normalized_location);
+      CREATE INDEX IF NOT EXISTS idx_jobs_content_hash ON jobs(content_hash);
+      CREATE INDEX IF NOT EXISTS idx_jobs_automation_status ON jobs(automation_status, discovered_at);
+      CREATE INDEX IF NOT EXISTS idx_job_sources_enabled ON job_sources(enabled, last_checked_at);
+      CREATE INDEX IF NOT EXISTS idx_job_matches_score ON job_matches(hard_reject, combined_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_job_match_history_job ON job_match_analysis_history(job_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_duplicate_events_job ON job_duplicate_events(canonical_job_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON job_automation_runs(started_at DESC);
+    `,
+  },
 ];

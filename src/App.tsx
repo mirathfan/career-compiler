@@ -9,12 +9,16 @@ import {
   Database,
   FlaskConical,
   Globe,
+  Inbox,
   Library,
+  PackageCheck,
+  Radar,
   Settings,
   Sparkles,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { ExtensionRequestProcessor } from "./lib/extension/ExtensionRequestProcessor";
+import { JobAutomationLaunchScheduler } from "./lib/job-automation/JobAutomationLaunchScheduler";
 
 const DashboardPage = lazy(() => import("./features/dashboard/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const CandidateBrainPage = lazy(() => import("./features/candidate-brain/CandidateBrainPage").then((module) => ({ default: module.CandidateBrainPage })));
@@ -26,6 +30,9 @@ const BrowserExtensionPage = lazy(() => import("./features/browser-extension/Bro
 const CareerCopilotPage = lazy(() => import("./features/copilot/CareerCopilotPage").then((module) => ({ default: module.CareerCopilotPage })));
 const EvaluationPage = lazy(() => import("./features/evaluation/EvaluationPage").then((module) => ({ default: module.EvaluationPage })));
 const SettingsPage = lazy(() => import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage })));
+const JobRadarPage = lazy(() => import("./features/job-radar/JobRadarPage").then((module) => ({ default: module.JobRadarPage })));
+const MatchInboxPage = lazy(() => import("./features/match-inbox/MatchInboxPage").then((module) => ({ default: module.MatchInboxPage })));
+const ApplicationQueuePage = lazy(() => import("./features/application-queue/ApplicationQueuePage").then((module) => ({ default: module.ApplicationQueuePage })));
 
 interface NavigationItem {
   to: string;
@@ -43,6 +50,9 @@ const navigationGroups: Array<{ label: string; items: NavigationItem[] }> = [
       { to: "/tailor", label: "Resume Builder", ariaLabel: "Tailor Resume", icon: BriefcaseBusiness, shortcut: "⌘⌥T" },
       { to: "/library", label: "Resume Library", icon: Library },
       { to: "/applications", label: "Applications", icon: ClipboardList },
+      { to: "/job-radar", label: "Job Radar", icon: Radar },
+      { to: "/match-inbox", label: "Match Inbox", icon: Inbox },
+      { to: "/application-queue", label: "Application Queue", icon: PackageCheck },
     ],
   },
   {
@@ -137,6 +147,7 @@ function AppShell() {
     <>
       <WorkspaceState />
       <ExtensionRequestProcessor />
+      <JobAutomationLaunchScheduler />
       <div className="app-shell">
         <aside className="app-sidebar">
           <div className="border-b border-slate-200 px-4 py-4">
@@ -177,6 +188,9 @@ function AppShell() {
             <Route path="/tailor" element={<TailorResumePage />} />
             <Route path="/library" element={<ResumeLibraryPage />} />
             <Route path="/applications" element={<ApplicationsPage />} />
+            <Route path="/job-radar" element={<JobRadarPage />} />
+            <Route path="/match-inbox" element={<MatchInboxPage />} />
+            <Route path="/application-queue" element={<ApplicationQueuePage />} />
             <Route path="/browser-extension" element={<BrowserExtensionPage />} />
             <Route path="/copilot" element={<CareerCopilotPage />} />
             <Route path="/evaluation" element={<EvaluationPage />} />

@@ -19,6 +19,14 @@ import type {
   EvaluationSummary,
   FactUsage,
   Job,
+  JobSource,
+  JobMatch,
+  JobSearchPreferences,
+  JobAutomationRun,
+  ApplicationPackage,
+  ApplicationAnswerVaultEntry,
+  JobDuplicateEvent,
+  JobMatchHistory,
   MigrationEvent,
   Profile,
   ResumeArchive,
@@ -50,6 +58,9 @@ import {
   applyCareerImportToState,
 } from "./careerImportPersistence";
 import { createCareerMemoryExportProposal } from "../import/careerIntake";
+import { defaultJobSearchPreferences } from "../job-automation/preferences";
+import { protectAnswerVaultEntry } from "../job-automation/answerVault";
+import { normalizeLocation, normalizeTitle, stableContentHash } from "../job-automation/normalize";
 import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSkills } from "./seed";
 import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
 
@@ -64,6 +75,14 @@ interface MemoryState {
   careerStories: CareerStory[];
   approvedApplicationAnswers: ApprovedApplicationAnswer[];
   jobs: Job[];
+  jobSources: JobSource[];
+  jobMatches: JobMatch[];
+  jobSearchPreferences: JobSearchPreferences | null;
+  applicationPackages: ApplicationPackage[];
+  applicationAnswerVault: ApplicationAnswerVaultEntry[];
+  jobAutomationRuns: JobAutomationRun[];
+  jobDuplicateEvents: JobDuplicateEvent[];
+  jobMatchHistory: JobMatchHistory[];
   resumes: ResumeVersion[];
   approvedVariants: ApprovedBulletVariant[];
   applications: ApplicationRecord[];
@@ -96,6 +115,14 @@ function emptyState(): MemoryState {
     careerStories: [],
     approvedApplicationAnswers: [],
     jobs: [],
+    jobSources: [],
+    jobMatches: [],
+    jobSearchPreferences: null,
+    applicationPackages: [],
+    applicationAnswerVault: [],
+    jobAutomationRuns: [],
+    jobDuplicateEvents: [],
+    jobMatchHistory: [],
     resumes: [],
     approvedVariants: [],
     applications: [],
@@ -175,6 +202,36 @@ function defaultCandidatePreferences(existing?: CandidatePreferences | null): Ca
   };
 }
 
+function normalizeMemoryJob(job: Job): Job {
+  return {
+    ...job,
+    sourceId: job.sourceId ?? "",
+    externalId: job.externalId ?? "",
+    normalizedTitle: job.normalizedTitle ?? normalizeTitle(job.roleTitle),
+    descriptionHtml: job.descriptionHtml ?? "",
+    descriptionText: job.descriptionText ?? job.rawDescription,
+    location: job.location ?? "",
+    normalizedLocation: job.normalizedLocation ?? normalizeLocation(job.location ?? ""),
+    workplaceType: job.workplaceType ?? "unspecified",
+    employmentType: job.employmentType ?? "",
+    department: job.department ?? "",
+    salaryMin: job.salaryMin ?? null,
+    salaryMax: job.salaryMax ?? null,
+    salaryCurrency: job.salaryCurrency ?? "",
+    salaryInterval: job.salaryInterval ?? "",
+    postedAt: job.postedAt ?? "",
+    discoveredAt: job.discoveredAt ?? job.createdAt,
+    lastSeenAt: job.lastSeenAt ?? job.updatedAt,
+    applicationUrl: job.applicationUrl ?? job.sourceUrl,
+    canonicalUrl: job.canonicalUrl ?? job.sourceUrl,
+    contentHash: job.contentHash ?? stableContentHash(job.rawDescription),
+    sourcePayloadJson: job.sourcePayloadJson ?? {},
+    status: job.status ?? "new",
+    closedAt: job.closedAt ?? "",
+    changedSinceAnalysis: job.changedSinceAnalysis ?? false,
+  };
+}
+
 export class MemoryRepository implements AppRepository {
   private state: MemoryState;
   private readonly persistKey?: string;
@@ -200,6 +257,15 @@ export class MemoryRepository implements AppRepository {
         candidatePreferences: stored.candidatePreferences ?? null,
         careerStories: stored.careerStories ?? [],
         approvedApplicationAnswers: stored.approvedApplicationAnswers ?? [],
+        jobSources: stored.jobSources ?? [],
+        jobMatches: stored.jobMatches ?? [],
+        jobSearchPreferences: stored.jobSearchPreferences ?? null,
+        applicationPackages: stored.applicationPackages ?? [],
+        applicationAnswerVault: stored.applicationAnswerVault ?? [],
+        jobAutomationRuns: stored.jobAutomationRuns ?? [],
+        jobDuplicateEvents: stored.jobDuplicateEvents ?? [],
+        jobMatchHistory: stored.jobMatchHistory ?? [],
+        jobs: (stored.jobs ?? []).map(normalizeMemoryJob),
         applications: (stored.applications ?? []).map((application) => ({
           ...application,
           submittedResumeVersionId: application.submittedResumeVersionId ?? "",
@@ -705,12 +771,197 @@ export class MemoryRepository implements AppRepository {
       sourceUrl: job.sourceUrl ?? existing?.sourceUrl ?? "",
       rawDescription: job.rawDescription,
       analysisJson: job.analysisJson ?? existing?.analysisJson ?? null,
+      sourceId: job.sourceId ?? existing?.sourceId ?? "",
+      externalId: job.externalId ?? existing?.externalId ?? "",
+      normalizedTitle: job.normalizedTitle ?? existing?.normalizedTitle ?? normalizeTitle(job.roleTitle ?? existing?.roleTitle ?? ""),
+      descriptionHtml: job.descriptionHtml ?? existing?.descriptionHtml ?? "",
+      descriptionText: job.descriptionText ?? existing?.descriptionText ?? job.rawDescription,
+      location: job.location ?? existing?.location ?? "",
+      normalizedLocation: job.normalizedLocation ?? existing?.normalizedLocation ?? normalizeLocation(job.location ?? existing?.location ?? ""),
+      workplaceType: job.workplaceType ?? existing?.workplaceType ?? "unspecified",
+      employmentType: job.employmentType ?? existing?.employmentType ?? "",
+      department: job.department ?? existing?.department ?? "",
+      salaryMin: job.salaryMin ?? existing?.salaryMin ?? null,
+      salaryMax: job.salaryMax ?? existing?.salaryMax ?? null,
+      salaryCurrency: job.salaryCurrency ?? existing?.salaryCurrency ?? "",
+      salaryInterval: job.salaryInterval ?? existing?.salaryInterval ?? "",
+      postedAt: job.postedAt ?? existing?.postedAt ?? "",
+      discoveredAt: existing?.discoveredAt ?? job.discoveredAt ?? now,
+      lastSeenAt: job.lastSeenAt ?? now,
+      applicationUrl: job.applicationUrl ?? existing?.applicationUrl ?? job.sourceUrl ?? existing?.sourceUrl ?? "",
+      canonicalUrl: job.canonicalUrl ?? existing?.canonicalUrl ?? job.sourceUrl ?? existing?.sourceUrl ?? "",
+      contentHash: job.contentHash ?? existing?.contentHash ?? stableContentHash(job.rawDescription),
+      sourcePayloadJson: job.sourcePayloadJson ?? existing?.sourcePayloadJson ?? {},
+      status: job.status ?? existing?.status ?? "new",
+      closedAt: job.closedAt ?? existing?.closedAt ?? "",
+      changedSinceAnalysis: job.changedSinceAnalysis ?? existing?.changedSinceAnalysis ?? false,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
     this.state.jobs = [...this.state.jobs.filter((item) => item.id !== saved.id), saved];
     this.persist();
     return clone(saved);
+  }
+
+  async listJobSources() {
+    return clone([...this.state.jobSources].sort((a, b) => a.name.localeCompare(b.name)));
+  }
+
+  async saveJobSource(source: Partial<JobSource> & Pick<JobSource, "name" | "companyName" | "sourceType" | "sourceIdentifier">) {
+    const now = nowIso();
+    const existing = source.id ? this.state.jobSources.find((item) => item.id === source.id) : undefined;
+    const saved: JobSource = {
+      id: existing?.id ?? source.id ?? createId("job-source"),
+      name: source.name,
+      companyName: source.companyName,
+      sourceType: source.sourceType,
+      sourceIdentifier: source.sourceIdentifier,
+      careersUrl: source.careersUrl ?? existing?.careersUrl ?? "",
+      enabled: source.enabled ?? existing?.enabled ?? true,
+      pollingIntervalHours: source.pollingIntervalHours ?? existing?.pollingIntervalHours ?? 24,
+      lastCheckedAt: source.lastCheckedAt ?? existing?.lastCheckedAt ?? "",
+      lastSuccessAt: source.lastSuccessAt ?? existing?.lastSuccessAt ?? "",
+      lastError: source.lastError ?? existing?.lastError ?? "",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.state.jobSources = [...this.state.jobSources.filter((item) => item.id !== saved.id), saved];
+    this.persist();
+    return clone(saved);
+  }
+
+  async deleteJobSource(id: string) {
+    this.state.jobSources = this.state.jobSources.filter((source) => source.id !== id);
+    this.persist();
+  }
+
+  async listJobMatches() {
+    return clone([...this.state.jobMatches].sort((a, b) => b.combinedScore - a.combinedScore));
+  }
+
+  async getJobMatch(jobId: string) {
+    return clone(this.state.jobMatches.find((match) => match.jobId === jobId) ?? null);
+  }
+
+  async saveJobMatch(match: Partial<JobMatch> & Pick<JobMatch, "jobId" | "deterministicScore" | "combinedScore">) {
+    const now = nowIso();
+    const existing = this.state.jobMatches.find((item) => item.jobId === match.jobId);
+    const saved: JobMatch = {
+      id: existing?.id ?? match.id ?? createId("job-match"),
+      jobId: match.jobId,
+      deterministicScore: match.deterministicScore,
+      aiScore: match.aiScore ?? existing?.aiScore ?? null,
+      combinedScore: match.combinedScore,
+      scoreBreakdown: match.scoreBreakdown ?? existing?.scoreBreakdown ?? { title: 0, skills: 0, experience: 0, location: 0, projects: 0, recency: 0 },
+      scoreReasons: match.scoreReasons ?? existing?.scoreReasons ?? [],
+      hardReject: match.hardReject ?? existing?.hardReject ?? false,
+      hardRejectReasons: match.hardRejectReasons ?? existing?.hardRejectReasons ?? [],
+      warnings: match.warnings ?? existing?.warnings ?? [],
+      matchedSkillIds: match.matchedSkillIds ?? existing?.matchedSkillIds ?? [],
+      matchedProjectIds: match.matchedProjectIds ?? existing?.matchedProjectIds ?? [],
+      matchedFactIds: match.matchedFactIds ?? existing?.matchedFactIds ?? [],
+      missingRequirements: match.missingRequirements ?? existing?.missingRequirements ?? [],
+      strengths: match.strengths ?? existing?.strengths ?? [],
+      concerns: match.concerns ?? existing?.concerns ?? [],
+      recommendedResumeProfile: match.recommendedResumeProfile ?? existing?.recommendedResumeProfile ?? "",
+      sponsorshipStatus: match.sponsorshipStatus ?? existing?.sponsorshipStatus ?? "not_mentioned",
+      citizenshipRequirement: match.citizenshipRequirement ?? existing?.citizenshipRequirement ?? "not_mentioned",
+      experienceCompatibility: match.experienceCompatibility ?? existing?.experienceCompatibility ?? "unclear",
+      locationCompatibility: match.locationCompatibility ?? existing?.locationCompatibility ?? "unclear",
+      analysisModel: match.analysisModel ?? existing?.analysisModel ?? "",
+      analysisPromptVersion: match.analysisPromptVersion ?? existing?.analysisPromptVersion ?? "",
+      analysisJson: match.analysisJson ?? existing?.analysisJson ?? {},
+      analyzedAt: match.analyzedAt ?? now,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.state.jobMatches = [...this.state.jobMatches.filter((item) => item.jobId !== saved.jobId), saved];
+    this.persist();
+    return clone(saved);
+  }
+
+  async getJobSearchPreferences() {
+    return clone(defaultJobSearchPreferences(this.state.jobSearchPreferences));
+  }
+
+  async saveJobSearchPreferences(preferences: Partial<JobSearchPreferences>) {
+    const saved = defaultJobSearchPreferences({ ...this.state.jobSearchPreferences, ...preferences, updatedAt: nowIso() });
+    this.state.jobSearchPreferences = saved;
+    this.persist();
+    return clone(saved);
+  }
+
+  async listApplicationPackages() {
+    return clone([...this.state.applicationPackages].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
+  }
+
+  async saveApplicationPackage(applicationPackage: Partial<ApplicationPackage> & Pick<ApplicationPackage, "jobId">) {
+    const now = nowIso();
+    const existing = this.state.applicationPackages.find((item) => item.jobId === applicationPackage.jobId);
+    const saved: ApplicationPackage = {
+      id: existing?.id ?? applicationPackage.id ?? createId("application-package"),
+      jobId: applicationPackage.jobId,
+      resumeVersionId: applicationPackage.resumeVersionId ?? existing?.resumeVersionId ?? "",
+      coverLetterText: applicationPackage.coverLetterText ?? existing?.coverLetterText ?? "",
+      selectedResumeProfile: applicationPackage.selectedResumeProfile ?? existing?.selectedResumeProfile ?? "",
+      generationStatus: applicationPackage.generationStatus ?? existing?.generationStatus ?? "not_started",
+      validationStatus: applicationPackage.validationStatus ?? existing?.validationStatus ?? "not_validated",
+      validationErrors: applicationPackage.validationErrors ?? existing?.validationErrors ?? [],
+      suggestedAnswers: applicationPackage.suggestedAnswers ?? existing?.suggestedAnswers ?? {},
+      unresolvedQuestions: applicationPackage.unresolvedQuestions ?? existing?.unresolvedQuestions ?? [],
+      generatedAt: applicationPackage.generatedAt ?? existing?.generatedAt ?? "",
+      approvedAt: applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    this.state.applicationPackages = [...this.state.applicationPackages.filter((item) => item.jobId !== saved.jobId), saved];
+    this.persist();
+    return clone(saved);
+  }
+
+  async listApplicationAnswerVault() {
+    return clone(this.state.applicationAnswerVault);
+  }
+
+  async saveApplicationAnswerVaultEntry(entry: Partial<ApplicationAnswerVaultEntry> & Pick<ApplicationAnswerVaultEntry, "key" | "value" | "category">) {
+    const now = nowIso();
+    const existing = this.state.applicationAnswerVault.find((item) => item.key === entry.key);
+    const saved = protectAnswerVaultEntry({
+      id: existing?.id ?? entry.id ?? createId("answer-vault"),
+      key: entry.key,
+      value: entry.value,
+      category: entry.category,
+      verified: entry.verified ?? existing?.verified ?? false,
+      sensitive: entry.sensitive ?? existing?.sensitive ?? false,
+      requiresManualConfirmation: entry.requiresManualConfirmation ?? existing?.requiresManualConfirmation ?? true,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    });
+    this.state.applicationAnswerVault = [...this.state.applicationAnswerVault.filter((item) => item.key !== saved.key), saved];
+    this.persist();
+    return clone(saved);
+  }
+
+  async listJobAutomationRuns() {
+    return clone([...this.state.jobAutomationRuns].sort((a, b) => b.startedAt.localeCompare(a.startedAt)));
+  }
+
+  async saveJobAutomationRun(run: JobAutomationRun) {
+    this.state.jobAutomationRuns = [...this.state.jobAutomationRuns.filter((item) => item.id !== run.id), clone(run)];
+    this.persist();
+    return clone(run);
+  }
+
+  async saveJobDuplicateEvent(event: JobDuplicateEvent) {
+    this.state.jobDuplicateEvents = [...this.state.jobDuplicateEvents.filter((item) => item.id !== event.id), clone(event)];
+    this.persist();
+    return clone(event);
+  }
+
+  async saveJobMatchHistory(history: JobMatchHistory) {
+    this.state.jobMatchHistory = [...this.state.jobMatchHistory.filter((item) => item.id !== history.id), clone(history)];
+    this.persist();
+    return clone(history);
   }
 
   async listResumeVersions() {
@@ -1170,7 +1421,7 @@ export class MemoryRepository implements AppRepository {
               this.state.approvedApplicationAnswers,
               payload.approvedApplicationAnswers ?? [],
             ),
-            jobs: mergeById(this.state.jobs, payload.jobs),
+            jobs: mergeById(this.state.jobs, payload.jobs.map(normalizeMemoryJob)),
             resumes: mergeById(this.state.resumes, payload.resumes),
             approvedVariants: mergeById(this.state.approvedVariants, payload.approvedVariants ?? []),
             applications: mergeById(this.state.applications, payload.applications ?? []),
@@ -1215,7 +1466,15 @@ export class MemoryRepository implements AppRepository {
             candidatePreferences: payload.candidatePreferences ?? null,
             careerStories: payload.careerStories ?? [],
             approvedApplicationAnswers: payload.approvedApplicationAnswers ?? [],
-            jobs: payload.jobs,
+            jobs: payload.jobs.map(normalizeMemoryJob),
+            jobSources: [],
+            jobMatches: [],
+            jobSearchPreferences: null,
+            applicationPackages: [],
+            applicationAnswerVault: [],
+            jobAutomationRuns: [],
+            jobDuplicateEvents: [],
+            jobMatchHistory: [],
             resumes: payload.resumes,
             approvedVariants: payload.approvedVariants ?? [],
             applications: payload.applications ?? [],

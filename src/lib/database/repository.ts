@@ -17,6 +17,14 @@ import type {
   CareerItem,
   DashboardMetrics,
   Job,
+  JobSource,
+  JobMatch,
+  JobSearchPreferences,
+  JobAutomationRun,
+  ApplicationPackage,
+  ApplicationAnswerVaultEntry,
+  JobDuplicateEvent,
+  JobMatchHistory,
   Profile,
   ResumeArchive,
   ResumeFavorite,
@@ -91,6 +99,22 @@ export interface AppRepository {
   listJobs(): Promise<Job[]>;
   saveJob(job: Partial<Job> & Pick<Job, "rawDescription">): Promise<Job>;
   getJob(id: string): Promise<Job | null>;
+  listJobSources(): Promise<JobSource[]>;
+  saveJobSource(source: Partial<JobSource> & Pick<JobSource, "name" | "companyName" | "sourceType" | "sourceIdentifier">): Promise<JobSource>;
+  deleteJobSource(id: string): Promise<void>;
+  listJobMatches(): Promise<JobMatch[]>;
+  getJobMatch(jobId: string): Promise<JobMatch | null>;
+  saveJobMatch(match: Partial<JobMatch> & Pick<JobMatch, "jobId" | "deterministicScore" | "combinedScore">): Promise<JobMatch>;
+  getJobSearchPreferences(): Promise<JobSearchPreferences>;
+  saveJobSearchPreferences(preferences: Partial<JobSearchPreferences>): Promise<JobSearchPreferences>;
+  listApplicationPackages(): Promise<ApplicationPackage[]>;
+  saveApplicationPackage(applicationPackage: Partial<ApplicationPackage> & Pick<ApplicationPackage, "jobId">): Promise<ApplicationPackage>;
+  listApplicationAnswerVault(): Promise<ApplicationAnswerVaultEntry[]>;
+  saveApplicationAnswerVaultEntry(entry: Partial<ApplicationAnswerVaultEntry> & Pick<ApplicationAnswerVaultEntry, "key" | "value" | "category">): Promise<ApplicationAnswerVaultEntry>;
+  listJobAutomationRuns(): Promise<JobAutomationRun[]>;
+  saveJobAutomationRun(run: JobAutomationRun): Promise<JobAutomationRun>;
+  saveJobDuplicateEvent(event: JobDuplicateEvent): Promise<JobDuplicateEvent>;
+  saveJobMatchHistory(history: JobMatchHistory): Promise<JobMatchHistory>;
   listResumeVersions(): Promise<ResumeVersion[]>;
   getResumeVersion(id: string): Promise<ResumeVersion | null>;
   saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">): Promise<ResumeVersion>;

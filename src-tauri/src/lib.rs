@@ -8,6 +8,7 @@ use commands::files::{
     read_evidence_file, read_text_file, render_resume_latex, reveal_in_finder,
     write_generated_resume_pdf, write_pdf_file, write_text_file,
 };
+use commands::job_sources::fetch_public_job_board;
 use commands::keychain_commands::{
     delete_openai_key, get_openai_key_status, set_openai_key, test_openai_key,
 };
@@ -65,7 +66,8 @@ pub fn run() {
             extension_reset_connection,
             extension_next_pending_request,
             extension_complete_pending_request,
-            extension_authorize_resume_file
+            extension_authorize_resume_file,
+            fetch_public_job_board
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

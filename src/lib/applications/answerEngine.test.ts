@@ -9,6 +9,7 @@ import type {
 } from "../../types/domain";
 import { generateApplicationAnswers } from "./answerEngine";
 import { normalizeDetectedField } from "./questionClassifier";
+import { legacyJobAutomationFields } from "../job-automation/normalize";
 
 const profile: Profile = {
   id: "profile-1",
@@ -81,6 +82,7 @@ function answer(fields: DetectedApplicationField[], sensitiveAnswers: SensitiveA
       sourceUrl: "",
       rawDescription: "React TypeScript full-stack product engineering role.",
       analysisJson: null,
+      ...legacyJobAutomationFields({ roleTitle: "Full-stack Engineer", rawDescription: "React TypeScript full-stack product engineering role.", sourceUrl: "", timestamp: "2026-07-16T00:00:00.000Z" }),
       createdAt: "2026-07-16T00:00:00.000Z",
       updatedAt: "2026-07-16T00:00:00.000Z",
     },

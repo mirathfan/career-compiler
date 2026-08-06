@@ -136,6 +136,30 @@ export type ApplicationAnswerSource =
   | "tailored_ai"
   | "user_required";
 export type ApplicationAutomationMode = "manual" | "autofill_manual_submit";
+export type JobSourceType = "greenhouse" | "lever" | "ashby" | "manual_url" | "email_import";
+export type JobStatus =
+  | "new"
+  | "filtered_out"
+  | "analysis_pending"
+  | "matched"
+  | "saved"
+  | "resume_pending"
+  | "resume_ready"
+  | "ready_to_apply"
+  | "applied"
+  | "rejected"
+  | "interviewing"
+  | "offer"
+  | "archived"
+  | "closed";
+export type JobWorkplaceType = "remote" | "hybrid" | "on_site" | "unspecified";
+export type SponsorshipStatus =
+  | "explicitly_available"
+  | "explicitly_unavailable"
+  | "not_mentioned"
+  | "unclear";
+export type CitizenshipRequirement = "required" | "not_required" | "not_mentioned" | "unclear";
+export type JobCompatibility = "strong" | "moderate" | "weak" | "incompatible" | "unclear";
 
 export interface Profile {
   id: string;
@@ -316,8 +340,184 @@ export interface Job {
   sourceUrl: string;
   rawDescription: string;
   analysisJson: JobAnalysis | null;
+  sourceId: string;
+  externalId: string;
+  normalizedTitle: string;
+  descriptionHtml: string;
+  descriptionText: string;
+  location: string;
+  normalizedLocation: string;
+  workplaceType: JobWorkplaceType;
+  employmentType: string;
+  department: string;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  salaryCurrency: string;
+  salaryInterval: string;
+  postedAt: string;
+  discoveredAt: string;
+  lastSeenAt: string;
+  applicationUrl: string;
+  canonicalUrl: string;
+  contentHash: string;
+  sourcePayloadJson: unknown;
+  status: JobStatus;
+  closedAt: string;
+  changedSinceAnalysis: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface JobSource {
+  id: string;
+  name: string;
+  companyName: string;
+  sourceType: JobSourceType;
+  sourceIdentifier: string;
+  careersUrl: string;
+  enabled: boolean;
+  pollingIntervalHours: number;
+  lastCheckedAt: string;
+  lastSuccessAt: string;
+  lastError: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobScoreBreakdown {
+  title: number;
+  skills: number;
+  experience: number;
+  location: number;
+  projects: number;
+  recency: number;
+}
+
+export interface JobMatch {
+  id: string;
+  jobId: string;
+  deterministicScore: number;
+  aiScore: number | null;
+  combinedScore: number;
+  scoreBreakdown: JobScoreBreakdown;
+  scoreReasons: string[];
+  hardReject: boolean;
+  hardRejectReasons: string[];
+  warnings: string[];
+  matchedSkillIds: string[];
+  matchedProjectIds: string[];
+  matchedFactIds: string[];
+  missingRequirements: string[];
+  strengths: string[];
+  concerns: string[];
+  recommendedResumeProfile: string;
+  sponsorshipStatus: SponsorshipStatus;
+  citizenshipRequirement: CitizenshipRequirement;
+  experienceCompatibility: JobCompatibility;
+  locationCompatibility: JobCompatibility;
+  analysisModel: string;
+  analysisPromptVersion: string;
+  analysisJson: unknown;
+  analyzedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobSearchPreferences {
+  id: string;
+  automationEnabled: boolean;
+  targetRoleTitles: string[];
+  preferredLocations: string[];
+  remotePreference: JobWorkplaceType | "any";
+  maximumJobAgeDays: number;
+  minimumMatchScore: number;
+  excludedCompanies: string[];
+  excludedTitleKeywords: string[];
+  includedKeywords: string[];
+  requiredKeywords: string[];
+  preferredSkills: string[];
+  maximumExperienceYears: number | null;
+  seniorityLevels: string[];
+  employmentTypes: string[];
+  salaryMinimum: number | null;
+  salaryCurrency: string;
+  citizenshipRestrictionBehavior: "reject" | "warn" | "ignore";
+  sponsorshipFilteringBehavior: "reject_unavailable" | "warn" | "ignore";
+  maximumJobsAnalyzedPerRun: number;
+  maximumResumesGeneratedPerRun: number;
+  pollingIntervalHours: number;
+  resumeGenerationMode: "manual" | "threshold";
+  resumeGenerationThreshold: number;
+  requireApprovalBeforeAi: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApplicationPackage {
+  id: string;
+  jobId: string;
+  resumeVersionId: string;
+  coverLetterText: string;
+  selectedResumeProfile: string;
+  generationStatus: "not_started" | "pending" | "ready" | "failed";
+  validationStatus: "not_validated" | "valid" | "invalid";
+  validationErrors: string[];
+  suggestedAnswers: Record<string, unknown>;
+  unresolvedQuestions: string[];
+  generatedAt: string;
+  approvedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ApplicationAnswerVaultEntry {
+  id: string;
+  key: string;
+  value: unknown;
+  category: string;
+  verified: boolean;
+  sensitive: boolean;
+  requiresManualConfirmation: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JobAutomationRun {
+  id: string;
+  startedAt: string;
+  completedAt: string;
+  status: "running" | "completed" | "partial" | "failed";
+  sourcesChecked: number;
+  jobsFetched: number;
+  jobsAdded: number;
+  jobsUpdated: number;
+  jobsDeduplicated: number;
+  jobsFiltered: number;
+  jobsAnalyzed: number;
+  resumesGenerated: number;
+  errors: Array<{ scope: "source" | "job" | "analysis" | "resume"; id: string; code: string; message: string }>;
+  summary: { message: string; highMatchJobIds: string[]; sourceFailureCount: number };
+}
+
+export interface JobDuplicateEvent {
+  id: string;
+  incomingExternalId: string;
+  canonicalJobId: string;
+  sourceId: string;
+  reason: string;
+  confidence: number;
+  createdAt: string;
+}
+
+export interface JobMatchHistory {
+  id: string;
+  jobId: string;
+  contentHash: string;
+  deterministicScore: number;
+  aiScore: number | null;
+  combinedScore: number;
+  analysisJson: unknown;
+  createdAt: string;
 }
 
 export interface ResumeVersion {

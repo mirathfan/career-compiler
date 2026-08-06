@@ -22,6 +22,7 @@ import { ROLE_PROFILES, controlsForRoleProfile } from "../../lib/tailoring/roleP
 import { ResumeTemplateSettingsSchema } from "../../schemas/settings";
 import type { AppSettings, BackupPayload, BackupPreview, Job, Profile, ResumeTemplateSettings, XeLaTeXDiagnostics } from "../../types/domain";
 import { createId, nowIso } from "../../lib/utils";
+import { legacyJobAutomationFields } from "../../lib/job-automation/normalize";
 import { sampleJob } from "../tailoring/sampleJob";
 import { AI_CONFIG } from "../../lib/ai/config";
 
@@ -111,7 +112,8 @@ export function SettingsPage() {
       const analyzed = await provider.analyzeJob({ ...sampleJob, modelName: settingsDraft.modelName });
       const controls = controlsForRoleProfile("full-stack-software-engineer", settingsDraft.tailoringDefaults);
       const evidence = splitEvidence(scoreCareerFacts(analyzed.data, factsQuery.data ?? [], itemsQuery.data ?? [], ROLE_PROFILES[controls.roleProfileId]), {});
-      const job: Job = { id: createId("dev-job"), company: sampleJob.company || analyzed.data.inferredCompany, roleTitle: sampleJob.roleTitle || analyzed.data.inferredRoleTitle, sourceUrl: sampleJob.sourceUrl, rawDescription: sampleJob.rawDescription, analysisJson: analyzed.data, createdAt: nowIso(), updatedAt: nowIso() };
+      const timestamp = nowIso();
+      const job: Job = { id: createId("dev-job"), company: sampleJob.company || analyzed.data.inferredCompany, roleTitle: sampleJob.roleTitle || analyzed.data.inferredRoleTitle, sourceUrl: sampleJob.sourceUrl, rawDescription: sampleJob.rawDescription, analysisJson: analyzed.data, ...legacyJobAutomationFields({ roleTitle: sampleJob.roleTitle || analyzed.data.inferredRoleTitle, rawDescription: sampleJob.rawDescription, sourceUrl: sampleJob.sourceUrl, timestamp }), createdAt: timestamp, updatedAt: timestamp };
       const request = buildResumeGenerationRequest({ job, analysis: analyzed.data, profile: profileDraft, items: itemsQuery.data ?? [], evidence, skills: skillsQuery.data ?? [], controls });
       const generated = await generateEvidenceGroundedResume({ provider, request, modelName: settingsDraft.modelName });
       const issues = validateResumeClaims({ resume: generated.resume, facts: factsQuery.data ?? [], items: itemsQuery.data ?? [], skills: skillsQuery.data ?? [], profile: profileDraft, generationRequest: request });

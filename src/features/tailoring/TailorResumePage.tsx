@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowDown,
@@ -59,6 +59,7 @@ import {
 } from "../../lib/resume/validation";
 import { applyTemplateOrdering } from "../../lib/resume/templateSettings";
 import { parseClipboardJob } from "../../lib/jobs/clipboard";
+import { legacyJobAutomationFields } from "../../lib/job-automation/normalize";
 import { useResumeEditorStore } from "../../stores/resumeEditorStore";
 import type {
   AIRequestMetadata,
@@ -567,6 +568,7 @@ function ResumeSourcePanel({
 export function TailorResumePage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
@@ -623,6 +625,23 @@ export function TailorResumePage() {
   const resumeVersionsQuery = useQuery({ queryKey: ["resume-versions"], queryFn: () => repository.listResumeVersions() });
 
   useEffect(() => {
+    const jobId = searchParams.get("jobId");
+    if (!jobId) return;
+    let active = true;
+    void repository.getJob(jobId).then((savedJob) => {
+      if (!active || !savedJob) return;
+      form.reset({ company: savedJob.company, roleTitle: savedJob.roleTitle, sourceUrl: savedJob.applicationUrl || savedJob.sourceUrl, rawDescription: savedJob.descriptionText || savedJob.rawDescription });
+      if (savedJob.analysisJson) {
+        setJob(savedJob);
+        setAnalysis(savedJob.analysisJson);
+        setJobPersisted(true);
+        setStep(2);
+      }
+    });
+    return () => { active = false; };
+  }, [form, repository, searchParams]);
+
+  useEffect(() => {
     if (settingsQuery.data && !controlsLoaded) {
       setControls(settingsQuery.data.tailoringDefaults);
       setControlsLoaded(true);
@@ -654,6 +673,7 @@ export function TailorResumePage() {
         sourceUrl: values.sourceUrl,
         rawDescription: values.rawDescription,
         analysisJson: result.data,
+        ...legacyJobAutomationFields({ roleTitle: values.roleTitle || result.data.inferredRoleTitle, rawDescription: values.rawDescription, sourceUrl: values.sourceUrl, timestamp }),
         createdAt: timestamp,
         updatedAt: timestamp,
       };

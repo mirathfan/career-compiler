@@ -12,6 +12,7 @@ import type {
   TailoredResume,
 } from "../../types/domain";
 import { createId, nowIso } from "../utils";
+import { legacyJobAutomationFields } from "../job-automation/normalize";
 import { PROMPT_VERSIONS } from "../ai/prompts";
 import { createAIProvider } from "../ai/providerFactory";
 import { buildResumeGenerationRequest } from "../ai/generationRequest";
@@ -71,6 +72,7 @@ export async function runEvaluationFixture({
   controls.requiredFactIds = preferredFirstFact ? [preferredFirstFact.fact.id] : [];
   controls.lockedCareerItemIds = fixture.expectedPreferredCareerItemIds.slice(0, 1);
   controls.excludedFactIds = fixture.prohibitedFactIds;
+  const timestamp = nowIso();
   const job: Job = {
     id: `evaluation-job-${fixture.id}`,
     company: fixture.company,
@@ -78,8 +80,9 @@ export async function runEvaluationFixture({
     sourceUrl: "",
     rawDescription: fixture.jobDescription,
     analysisJson: fixture.analysis,
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
+    ...legacyJobAutomationFields({ roleTitle: fixture.roleTitle, rawDescription: fixture.jobDescription, sourceUrl: "", timestamp }),
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
   const request = buildResumeGenerationRequest({
     job,

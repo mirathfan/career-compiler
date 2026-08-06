@@ -21,6 +21,14 @@ import type {
   EvaluationSummary,
   FactUsage,
   Job,
+  JobSource,
+  JobMatch,
+  JobSearchPreferences,
+  JobAutomationRun,
+  ApplicationPackage,
+  ApplicationAnswerVaultEntry,
+  JobDuplicateEvent,
+  JobMatchHistory,
   MigrationEvent,
   Profile,
   ResumeArchive,
@@ -51,6 +59,9 @@ import { deterministicSearch } from "../search/text";
 import { applyCareerImportToState } from "./careerImportPersistence";
 import { createCareerMemoryExportProposal } from "../import/careerIntake";
 import { normalizeStoredJobAnalysis } from "./jobAnalysis";
+import { defaultJobSearchPreferences } from "../job-automation/preferences";
+import { protectAnswerVaultEntry } from "../job-automation/answerVault";
+import { normalizeLocation, normalizeTitle, stableContentHash } from "../job-automation/normalize";
 import { migrations } from "./migrations";
 import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSkills } from "./seed";
 import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
@@ -282,8 +293,134 @@ function mapJob(row: Row): Job {
     sourceUrl: asString(row.source_url),
     rawDescription: asString(row.raw_description),
     analysisJson: analysis,
+    sourceId: asString(row.source_id),
+    externalId: asString(row.external_id),
+    normalizedTitle: asString(row.normalized_title) || normalizeTitle(asString(row.role_title)),
+    descriptionHtml: asString(row.description_html),
+    descriptionText: asString(row.description_text) || asString(row.raw_description),
+    location: asString(row.location),
+    normalizedLocation: asString(row.normalized_location) || normalizeLocation(asString(row.location)),
+    workplaceType: (asString(row.workplace_type) || "unspecified") as Job["workplaceType"],
+    employmentType: asString(row.employment_type),
+    department: asString(row.department),
+    salaryMin: row.salary_min === null || row.salary_min === undefined ? null : Number(row.salary_min),
+    salaryMax: row.salary_max === null || row.salary_max === undefined ? null : Number(row.salary_max),
+    salaryCurrency: asString(row.salary_currency),
+    salaryInterval: asString(row.salary_interval),
+    postedAt: asString(row.posted_at),
+    discoveredAt: asString(row.discovered_at) || asString(row.created_at),
+    lastSeenAt: asString(row.last_seen_at) || asString(row.updated_at),
+    applicationUrl: asString(row.application_url) || asString(row.source_url),
+    canonicalUrl: asString(row.canonical_url) || asString(row.source_url),
+    contentHash: asString(row.content_hash) || stableContentHash(asString(row.raw_description)),
+    sourcePayloadJson: parseJson(row.source_payload_json, {}),
+    status: (asString(row.automation_status) || "new") as Job["status"],
+    closedAt: asString(row.closed_at),
+    changedSinceAnalysis: asBool(row.changed_since_analysis),
     createdAt: asString(row.created_at),
     updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapJobSource(row: Row): JobSource {
+  return {
+    id: asString(row.id),
+    name: asString(row.name),
+    companyName: asString(row.company_name),
+    sourceType: row.source_type as JobSource["sourceType"],
+    sourceIdentifier: asString(row.source_identifier),
+    careersUrl: asString(row.careers_url),
+    enabled: asBool(row.enabled),
+    pollingIntervalHours: Number(row.polling_interval_hours ?? 24),
+    lastCheckedAt: asString(row.last_checked_at),
+    lastSuccessAt: asString(row.last_success_at),
+    lastError: asString(row.last_error),
+    createdAt: asString(row.created_at),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapJobMatch(row: Row): JobMatch {
+  return {
+    id: asString(row.id),
+    jobId: asString(row.job_id),
+    deterministicScore: Number(row.deterministic_score ?? 0),
+    aiScore: row.ai_score === null || row.ai_score === undefined ? null : Number(row.ai_score),
+    combinedScore: Number(row.combined_score ?? 0),
+    scoreBreakdown: parseJson(row.score_breakdown_json, { title: 0, skills: 0, experience: 0, location: 0, projects: 0, recency: 0 }) as JobMatch["scoreBreakdown"],
+    scoreReasons: parseArray(row.score_reasons_json),
+    hardReject: asBool(row.hard_reject),
+    hardRejectReasons: parseArray(row.hard_reject_reasons_json),
+    warnings: parseArray(row.warnings_json),
+    matchedSkillIds: parseArray(row.matched_skill_ids_json),
+    matchedProjectIds: parseArray(row.matched_project_ids_json),
+    matchedFactIds: parseArray(row.matched_fact_ids_json),
+    missingRequirements: parseArray(row.missing_requirements_json),
+    strengths: parseArray(row.strengths_json),
+    concerns: parseArray(row.concerns_json),
+    recommendedResumeProfile: asString(row.recommended_resume_profile),
+    sponsorshipStatus: row.sponsorship_status as JobMatch["sponsorshipStatus"],
+    citizenshipRequirement: row.citizenship_requirement as JobMatch["citizenshipRequirement"],
+    experienceCompatibility: row.experience_compatibility as JobMatch["experienceCompatibility"],
+    locationCompatibility: row.location_compatibility as JobMatch["locationCompatibility"],
+    analysisModel: asString(row.analysis_model),
+    analysisPromptVersion: asString(row.analysis_prompt_version),
+    analysisJson: parseJson(row.analysis_json, {}),
+    analyzedAt: asString(row.analyzed_at),
+    createdAt: asString(row.created_at),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapApplicationPackage(row: Row): ApplicationPackage {
+  return {
+    id: asString(row.id),
+    jobId: asString(row.job_id),
+    resumeVersionId: asString(row.resume_version_id),
+    coverLetterText: asString(row.cover_letter_text),
+    selectedResumeProfile: asString(row.selected_resume_profile),
+    generationStatus: row.generation_status as ApplicationPackage["generationStatus"],
+    validationStatus: row.validation_status as ApplicationPackage["validationStatus"],
+    validationErrors: parseArray(row.validation_errors_json),
+    suggestedAnswers: parseJson(row.suggested_answers_json, {}) as Record<string, unknown>,
+    unresolvedQuestions: parseArray(row.unresolved_questions_json),
+    generatedAt: asString(row.generated_at),
+    approvedAt: asString(row.approved_at),
+    createdAt: asString(row.created_at),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapAnswerVaultEntry(row: Row): ApplicationAnswerVaultEntry {
+  return {
+    id: asString(row.id),
+    key: asString(row.answer_key),
+    value: parseJson(row.value_json, null),
+    category: asString(row.category),
+    verified: asBool(row.verified),
+    sensitive: asBool(row.sensitive),
+    requiresManualConfirmation: asBool(row.requires_manual_confirmation),
+    createdAt: asString(row.created_at),
+    updatedAt: asString(row.updated_at),
+  };
+}
+
+function mapJobAutomationRun(row: Row): JobAutomationRun {
+  return {
+    id: asString(row.id),
+    startedAt: asString(row.started_at),
+    completedAt: asString(row.completed_at),
+    status: row.status as JobAutomationRun["status"],
+    sourcesChecked: Number(row.sources_checked ?? 0),
+    jobsFetched: Number(row.jobs_fetched ?? 0),
+    jobsAdded: Number(row.jobs_added ?? 0),
+    jobsUpdated: Number(row.jobs_updated ?? 0),
+    jobsDeduplicated: Number(row.jobs_deduplicated ?? 0),
+    jobsFiltered: Number(row.jobs_filtered ?? 0),
+    jobsAnalyzed: Number(row.jobs_analyzed ?? 0),
+    resumesGenerated: Number(row.resumes_generated ?? 0),
+    errors: parseJson(row.errors_json, []) as JobAutomationRun["errors"],
+    summary: parseJson(row.summary_json, { message: "", highMatchJobIds: [], sourceFailureCount: 0 }) as JobAutomationRun["summary"],
   };
 }
 
@@ -1337,14 +1474,59 @@ export class SqliteRepository implements AppRepository {
       sourceUrl: job.sourceUrl ?? mapped?.sourceUrl ?? "",
       rawDescription: job.rawDescription,
       analysisJson: job.analysisJson ?? mapped?.analysisJson ?? null,
+      sourceId: job.sourceId ?? mapped?.sourceId ?? "",
+      externalId: job.externalId ?? mapped?.externalId ?? "",
+      normalizedTitle: job.normalizedTitle ?? mapped?.normalizedTitle ?? normalizeTitle(job.roleTitle ?? mapped?.roleTitle ?? ""),
+      descriptionHtml: job.descriptionHtml ?? mapped?.descriptionHtml ?? "",
+      descriptionText: job.descriptionText ?? mapped?.descriptionText ?? job.rawDescription,
+      location: job.location ?? mapped?.location ?? "",
+      normalizedLocation: job.normalizedLocation ?? mapped?.normalizedLocation ?? normalizeLocation(job.location ?? mapped?.location ?? ""),
+      workplaceType: job.workplaceType ?? mapped?.workplaceType ?? "unspecified",
+      employmentType: job.employmentType ?? mapped?.employmentType ?? "",
+      department: job.department ?? mapped?.department ?? "",
+      salaryMin: job.salaryMin ?? mapped?.salaryMin ?? null,
+      salaryMax: job.salaryMax ?? mapped?.salaryMax ?? null,
+      salaryCurrency: job.salaryCurrency ?? mapped?.salaryCurrency ?? "",
+      salaryInterval: job.salaryInterval ?? mapped?.salaryInterval ?? "",
+      postedAt: job.postedAt ?? mapped?.postedAt ?? "",
+      discoveredAt: mapped?.discoveredAt ?? job.discoveredAt ?? now,
+      lastSeenAt: job.lastSeenAt ?? now,
+      applicationUrl: job.applicationUrl ?? mapped?.applicationUrl ?? job.sourceUrl ?? mapped?.sourceUrl ?? "",
+      canonicalUrl: job.canonicalUrl ?? mapped?.canonicalUrl ?? job.sourceUrl ?? mapped?.sourceUrl ?? "",
+      contentHash: job.contentHash ?? mapped?.contentHash ?? stableContentHash(job.rawDescription),
+      sourcePayloadJson: job.sourcePayloadJson ?? mapped?.sourcePayloadJson ?? {},
+      status: job.status ?? mapped?.status ?? "new",
+      closedAt: job.closedAt ?? mapped?.closedAt ?? "",
+      changedSinceAnalysis: job.changedSinceAnalysis ?? mapped?.changedSinceAnalysis ?? false,
       createdAt: mapped?.createdAt ?? now,
       updatedAt: now,
     };
     await this.db.execute(
-      `INSERT INTO jobs VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO jobs (
+        id,company,role_title,source_url,raw_description,analysis_json,created_at,updated_at,
+        source_id,external_id,normalized_title,description_html,description_text,location,normalized_location,
+        workplace_type,employment_type,department,salary_min,salary_max,salary_currency,salary_interval,
+        posted_at,discovered_at,last_seen_at,application_url,canonical_url,content_hash,source_payload_json,
+        automation_status,closed_at,changed_since_analysis
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
+        $23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+      )
        ON CONFLICT(id) DO UPDATE SET
         company = excluded.company, role_title = excluded.role_title, source_url = excluded.source_url,
         raw_description = excluded.raw_description, analysis_json = excluded.analysis_json,
+        source_id = excluded.source_id, external_id = excluded.external_id,
+        normalized_title = excluded.normalized_title, description_html = excluded.description_html,
+        description_text = excluded.description_text, location = excluded.location,
+        normalized_location = excluded.normalized_location, workplace_type = excluded.workplace_type,
+        employment_type = excluded.employment_type, department = excluded.department,
+        salary_min = excluded.salary_min, salary_max = excluded.salary_max,
+        salary_currency = excluded.salary_currency, salary_interval = excluded.salary_interval,
+        posted_at = excluded.posted_at, last_seen_at = excluded.last_seen_at,
+        application_url = excluded.application_url, canonical_url = excluded.canonical_url,
+        content_hash = excluded.content_hash, source_payload_json = excluded.source_payload_json,
+        automation_status = excluded.automation_status, closed_at = excluded.closed_at,
+        changed_since_analysis = excluded.changed_since_analysis,
         updated_at = excluded.updated_at`,
       [
         saved.id,
@@ -1355,9 +1537,256 @@ export class SqliteRepository implements AppRepository {
         saved.analysisJson ? JSON.stringify(saved.analysisJson) : null,
         saved.createdAt,
         saved.updatedAt,
+        saved.sourceId || null,
+        saved.externalId,
+        saved.normalizedTitle,
+        saved.descriptionHtml,
+        saved.descriptionText,
+        saved.location,
+        saved.normalizedLocation,
+        saved.workplaceType,
+        saved.employmentType,
+        saved.department,
+        saved.salaryMin,
+        saved.salaryMax,
+        saved.salaryCurrency,
+        saved.salaryInterval,
+        saved.postedAt,
+        saved.discoveredAt,
+        saved.lastSeenAt,
+        saved.applicationUrl,
+        saved.canonicalUrl,
+        saved.contentHash,
+        jsonText(saved.sourcePayloadJson),
+        saved.status,
+        saved.closedAt,
+        saved.changedSinceAnalysis ? 1 : 0,
       ],
     );
     return saved;
+  }
+
+  async listJobSources() {
+    return (await this.db.select<Row[]>("SELECT * FROM job_sources ORDER BY name")).map(mapJobSource);
+  }
+
+  async saveJobSource(source: Partial<JobSource> & Pick<JobSource, "name" | "companyName" | "sourceType" | "sourceIdentifier">) {
+    const rows = source.id ? await this.db.select<Row[]>("SELECT * FROM job_sources WHERE id = $1", [source.id]) : [];
+    const existing = rows[0] ? mapJobSource(rows[0]) : undefined;
+    const now = nowIso();
+    const saved: JobSource = {
+      id: existing?.id ?? source.id ?? createId("job-source"),
+      name: source.name,
+      companyName: source.companyName,
+      sourceType: source.sourceType,
+      sourceIdentifier: source.sourceIdentifier,
+      careersUrl: source.careersUrl ?? existing?.careersUrl ?? "",
+      enabled: source.enabled ?? existing?.enabled ?? true,
+      pollingIntervalHours: source.pollingIntervalHours ?? existing?.pollingIntervalHours ?? 24,
+      lastCheckedAt: source.lastCheckedAt ?? existing?.lastCheckedAt ?? "",
+      lastSuccessAt: source.lastSuccessAt ?? existing?.lastSuccessAt ?? "",
+      lastError: source.lastError ?? existing?.lastError ?? "",
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await this.db.execute(
+      `INSERT INTO job_sources (id,name,company_name,source_type,source_identifier,careers_url,enabled,polling_interval_hours,last_checked_at,last_success_at,last_error,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT(id) DO UPDATE SET name=excluded.name, company_name=excluded.company_name,
+       source_type=excluded.source_type, source_identifier=excluded.source_identifier, careers_url=excluded.careers_url,
+       enabled=excluded.enabled, polling_interval_hours=excluded.polling_interval_hours,
+       last_checked_at=excluded.last_checked_at, last_success_at=excluded.last_success_at,
+       last_error=excluded.last_error, updated_at=excluded.updated_at`,
+      [saved.id, saved.name, saved.companyName, saved.sourceType, saved.sourceIdentifier, saved.careersUrl,
+        saved.enabled ? 1 : 0, saved.pollingIntervalHours, saved.lastCheckedAt, saved.lastSuccessAt,
+        saved.lastError, saved.createdAt, saved.updatedAt],
+    );
+    return saved;
+  }
+
+  async deleteJobSource(id: string) {
+    await this.db.execute("DELETE FROM job_sources WHERE id = $1", [id]);
+  }
+
+  async listJobMatches() {
+    return (await this.db.select<Row[]>("SELECT * FROM job_matches ORDER BY combined_score DESC")).map(mapJobMatch);
+  }
+
+  async getJobMatch(jobId: string) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM job_matches WHERE job_id = $1", [jobId]);
+    return rows[0] ? mapJobMatch(rows[0]) : null;
+  }
+
+  async saveJobMatch(match: Partial<JobMatch> & Pick<JobMatch, "jobId" | "deterministicScore" | "combinedScore">) {
+    const existing = await this.getJobMatch(match.jobId);
+    const now = nowIso();
+    const saved: JobMatch = {
+      id: existing?.id ?? match.id ?? createId("job-match"), jobId: match.jobId,
+      deterministicScore: match.deterministicScore, aiScore: match.aiScore ?? existing?.aiScore ?? null,
+      combinedScore: match.combinedScore,
+      scoreBreakdown: match.scoreBreakdown ?? existing?.scoreBreakdown ?? { title: 0, skills: 0, experience: 0, location: 0, projects: 0, recency: 0 },
+      scoreReasons: match.scoreReasons ?? existing?.scoreReasons ?? [], hardReject: match.hardReject ?? existing?.hardReject ?? false,
+      hardRejectReasons: match.hardRejectReasons ?? existing?.hardRejectReasons ?? [], warnings: match.warnings ?? existing?.warnings ?? [],
+      matchedSkillIds: match.matchedSkillIds ?? existing?.matchedSkillIds ?? [], matchedProjectIds: match.matchedProjectIds ?? existing?.matchedProjectIds ?? [],
+      matchedFactIds: match.matchedFactIds ?? existing?.matchedFactIds ?? [], missingRequirements: match.missingRequirements ?? existing?.missingRequirements ?? [],
+      strengths: match.strengths ?? existing?.strengths ?? [], concerns: match.concerns ?? existing?.concerns ?? [],
+      recommendedResumeProfile: match.recommendedResumeProfile ?? existing?.recommendedResumeProfile ?? "",
+      sponsorshipStatus: match.sponsorshipStatus ?? existing?.sponsorshipStatus ?? "not_mentioned",
+      citizenshipRequirement: match.citizenshipRequirement ?? existing?.citizenshipRequirement ?? "not_mentioned",
+      experienceCompatibility: match.experienceCompatibility ?? existing?.experienceCompatibility ?? "unclear",
+      locationCompatibility: match.locationCompatibility ?? existing?.locationCompatibility ?? "unclear",
+      analysisModel: match.analysisModel ?? existing?.analysisModel ?? "", analysisPromptVersion: match.analysisPromptVersion ?? existing?.analysisPromptVersion ?? "",
+      analysisJson: match.analysisJson ?? existing?.analysisJson ?? {}, analyzedAt: match.analyzedAt ?? now,
+      createdAt: existing?.createdAt ?? now, updatedAt: now,
+    };
+    await this.db.execute(
+      `INSERT INTO job_matches (id,job_id,deterministic_score,ai_score,combined_score,score_breakdown_json,score_reasons_json,
+       hard_reject,hard_reject_reasons_json,warnings_json,matched_skill_ids_json,matched_project_ids_json,matched_fact_ids_json,
+       missing_requirements_json,strengths_json,concerns_json,recommended_resume_profile,sponsorship_status,citizenship_requirement,
+       experience_compatibility,location_compatibility,analysis_model,analysis_prompt_version,analysis_json,analyzed_at,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+       ON CONFLICT(job_id) DO UPDATE SET deterministic_score=excluded.deterministic_score, ai_score=excluded.ai_score,
+       combined_score=excluded.combined_score, score_breakdown_json=excluded.score_breakdown_json,
+       score_reasons_json=excluded.score_reasons_json, hard_reject=excluded.hard_reject,
+       hard_reject_reasons_json=excluded.hard_reject_reasons_json, warnings_json=excluded.warnings_json,
+       matched_skill_ids_json=excluded.matched_skill_ids_json, matched_project_ids_json=excluded.matched_project_ids_json,
+       matched_fact_ids_json=excluded.matched_fact_ids_json, missing_requirements_json=excluded.missing_requirements_json,
+       strengths_json=excluded.strengths_json, concerns_json=excluded.concerns_json,
+       recommended_resume_profile=excluded.recommended_resume_profile, sponsorship_status=excluded.sponsorship_status,
+       citizenship_requirement=excluded.citizenship_requirement, experience_compatibility=excluded.experience_compatibility,
+       location_compatibility=excluded.location_compatibility, analysis_model=excluded.analysis_model,
+       analysis_prompt_version=excluded.analysis_prompt_version, analysis_json=excluded.analysis_json,
+       analyzed_at=excluded.analyzed_at, updated_at=excluded.updated_at`,
+      [saved.id,saved.jobId,saved.deterministicScore,saved.aiScore,saved.combinedScore,jsonText(saved.scoreBreakdown),jsonText(saved.scoreReasons),
+        saved.hardReject ? 1 : 0,jsonText(saved.hardRejectReasons),jsonText(saved.warnings),jsonText(saved.matchedSkillIds),jsonText(saved.matchedProjectIds),
+        jsonText(saved.matchedFactIds),jsonText(saved.missingRequirements),jsonText(saved.strengths),jsonText(saved.concerns),saved.recommendedResumeProfile,
+        saved.sponsorshipStatus,saved.citizenshipRequirement,saved.experienceCompatibility,saved.locationCompatibility,saved.analysisModel,
+        saved.analysisPromptVersion,jsonText(saved.analysisJson),saved.analyzedAt,saved.createdAt,saved.updatedAt],
+    );
+    return saved;
+  }
+
+  async getJobSearchPreferences() {
+    const rows = await this.db.select<Row[]>("SELECT * FROM job_search_preferences WHERE id = 'job-search-preferences-default'");
+    if (!rows[0]) return defaultJobSearchPreferences();
+    return defaultJobSearchPreferences({
+      ...(parseJson(rows[0].preferences_json, {}) as Partial<JobSearchPreferences>),
+      id: asString(rows[0].id), automationEnabled: asBool(rows[0].automation_enabled),
+      createdAt: asString(rows[0].created_at), updatedAt: asString(rows[0].updated_at),
+    });
+  }
+
+  async saveJobSearchPreferences(preferences: Partial<JobSearchPreferences>) {
+    const current = await this.getJobSearchPreferences();
+    const saved = defaultJobSearchPreferences({ ...current, ...preferences, updatedAt: nowIso() });
+    await this.db.execute(
+      `INSERT INTO job_search_preferences (id,automation_enabled,preferences_json,created_at,updated_at) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT(id) DO UPDATE SET automation_enabled=excluded.automation_enabled, preferences_json=excluded.preferences_json, updated_at=excluded.updated_at`,
+      [saved.id, saved.automationEnabled ? 1 : 0, jsonText(saved), saved.createdAt, saved.updatedAt],
+    );
+    return saved;
+  }
+
+  async listApplicationPackages() {
+    return (await this.db.select<Row[]>("SELECT * FROM application_packages ORDER BY updated_at DESC")).map(mapApplicationPackage);
+  }
+
+  async saveApplicationPackage(applicationPackage: Partial<ApplicationPackage> & Pick<ApplicationPackage, "jobId">) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM application_packages WHERE job_id = $1", [applicationPackage.jobId]);
+    const existing = rows[0] ? mapApplicationPackage(rows[0]) : undefined;
+    const now = nowIso();
+    const saved: ApplicationPackage = {
+      id: existing?.id ?? applicationPackage.id ?? createId("application-package"), jobId: applicationPackage.jobId,
+      resumeVersionId: applicationPackage.resumeVersionId ?? existing?.resumeVersionId ?? "",
+      coverLetterText: applicationPackage.coverLetterText ?? existing?.coverLetterText ?? "",
+      selectedResumeProfile: applicationPackage.selectedResumeProfile ?? existing?.selectedResumeProfile ?? "",
+      generationStatus: applicationPackage.generationStatus ?? existing?.generationStatus ?? "not_started",
+      validationStatus: applicationPackage.validationStatus ?? existing?.validationStatus ?? "not_validated",
+      validationErrors: applicationPackage.validationErrors ?? existing?.validationErrors ?? [],
+      suggestedAnswers: applicationPackage.suggestedAnswers ?? existing?.suggestedAnswers ?? {},
+      unresolvedQuestions: applicationPackage.unresolvedQuestions ?? existing?.unresolvedQuestions ?? [],
+      generatedAt: applicationPackage.generatedAt ?? existing?.generatedAt ?? "",
+      approvedAt: applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
+      createdAt: existing?.createdAt ?? now, updatedAt: now,
+    };
+    await this.db.execute(
+      `INSERT INTO application_packages (id,job_id,resume_version_id,cover_letter_text,selected_resume_profile,generation_status,
+       validation_status,validation_errors_json,suggested_answers_json,unresolved_questions_json,generated_at,approved_at,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT(job_id) DO UPDATE SET resume_version_id=excluded.resume_version_id, cover_letter_text=excluded.cover_letter_text,
+       selected_resume_profile=excluded.selected_resume_profile, generation_status=excluded.generation_status,
+       validation_status=excluded.validation_status, validation_errors_json=excluded.validation_errors_json,
+       suggested_answers_json=excluded.suggested_answers_json, unresolved_questions_json=excluded.unresolved_questions_json,
+       generated_at=excluded.generated_at, approved_at=excluded.approved_at, updated_at=excluded.updated_at`,
+      [saved.id,saved.jobId,saved.resumeVersionId,saved.coverLetterText,saved.selectedResumeProfile,saved.generationStatus,
+        saved.validationStatus,jsonText(saved.validationErrors),jsonText(saved.suggestedAnswers),jsonText(saved.unresolvedQuestions),
+        saved.generatedAt,saved.approvedAt,saved.createdAt,saved.updatedAt],
+    );
+    return saved;
+  }
+
+  async listApplicationAnswerVault() {
+    return (await this.db.select<Row[]>("SELECT * FROM application_answer_vault ORDER BY answer_key")).map(mapAnswerVaultEntry);
+  }
+
+  async saveApplicationAnswerVaultEntry(entry: Partial<ApplicationAnswerVaultEntry> & Pick<ApplicationAnswerVaultEntry, "key" | "value" | "category">) {
+    const rows = await this.db.select<Row[]>("SELECT * FROM application_answer_vault WHERE answer_key = $1", [entry.key]);
+    const existing = rows[0] ? mapAnswerVaultEntry(rows[0]) : undefined;
+    const now = nowIso();
+    const saved = protectAnswerVaultEntry({
+      id: existing?.id ?? entry.id ?? createId("answer-vault"), key: entry.key, value: entry.value, category: entry.category,
+      verified: entry.verified ?? existing?.verified ?? false, sensitive: entry.sensitive ?? existing?.sensitive ?? false,
+      requiresManualConfirmation: entry.requiresManualConfirmation ?? existing?.requiresManualConfirmation ?? true,
+      createdAt: existing?.createdAt ?? now, updatedAt: now,
+    });
+    await this.db.execute(
+      `INSERT INTO application_answer_vault (id,answer_key,value_json,category,verified,sensitive,requires_manual_confirmation,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT(answer_key) DO UPDATE SET value_json=excluded.value_json, category=excluded.category,
+       verified=excluded.verified, sensitive=excluded.sensitive,
+       requires_manual_confirmation=excluded.requires_manual_confirmation, updated_at=excluded.updated_at`,
+      [saved.id,saved.key,valueJson(saved.value),saved.category,saved.verified ? 1 : 0,saved.sensitive ? 1 : 0,
+        saved.requiresManualConfirmation ? 1 : 0,saved.createdAt,saved.updatedAt],
+    );
+    return saved;
+  }
+
+  async listJobAutomationRuns() {
+    return (await this.db.select<Row[]>("SELECT * FROM job_automation_runs ORDER BY started_at DESC")).map(mapJobAutomationRun);
+  }
+
+  async saveJobAutomationRun(run: JobAutomationRun) {
+    await this.db.execute(
+      `INSERT INTO job_automation_runs (id,started_at,completed_at,status,sources_checked,jobs_fetched,jobs_added,jobs_updated,
+       jobs_deduplicated,jobs_filtered,jobs_analyzed,resumes_generated,errors_json,summary_json)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT(id) DO UPDATE SET completed_at=excluded.completed_at,status=excluded.status,
+       sources_checked=excluded.sources_checked,jobs_fetched=excluded.jobs_fetched,jobs_added=excluded.jobs_added,
+       jobs_updated=excluded.jobs_updated,jobs_deduplicated=excluded.jobs_deduplicated,jobs_filtered=excluded.jobs_filtered,
+       jobs_analyzed=excluded.jobs_analyzed,resumes_generated=excluded.resumes_generated,errors_json=excluded.errors_json,
+       summary_json=excluded.summary_json`,
+      [run.id,run.startedAt,run.completedAt,run.status,run.sourcesChecked,run.jobsFetched,run.jobsAdded,run.jobsUpdated,
+        run.jobsDeduplicated,run.jobsFiltered,run.jobsAnalyzed,run.resumesGenerated,jsonText(run.errors),jsonText(run.summary)],
+    );
+    return run;
+  }
+
+  async saveJobDuplicateEvent(event: JobDuplicateEvent) {
+    await this.db.execute(
+      `INSERT INTO job_duplicate_events (id,incoming_external_id,canonical_job_id,source_id,reason,confidence,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [event.id,event.incomingExternalId,event.canonicalJobId,event.sourceId,event.reason,event.confidence,event.createdAt],
+    );
+    return event;
+  }
+
+  async saveJobMatchHistory(history: JobMatchHistory) {
+    await this.db.execute(
+      `INSERT INTO job_match_analysis_history (id,job_id,content_hash,deterministic_score,ai_score,combined_score,analysis_json,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [history.id,history.jobId,history.contentHash,history.deterministicScore,history.aiScore,history.combinedScore,jsonText(history.analysisJson),history.createdAt],
+    );
+    return history;
   }
 
   async listResumeVersions() {

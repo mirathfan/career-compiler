@@ -231,4 +231,33 @@ describe("additive database migrations", () => {
     );
     database.close();
   });
+
+  it("adds job automation tables and upgrades legacy jobs without losing their lineage", () => {
+    const database = createDatabase();
+    for (let id = 1; id <= 8; id += 1) applyMigration(database, id);
+    database.run(
+      `INSERT INTO jobs (id,company,role_title,source_url,raw_description,analysis_json,created_at,updated_at)
+       VALUES ('job-automation-1','Legacy Co','Software Engineer','https://example.com/job','Preserve this description',NULL,'created','updated')`,
+    );
+    database.run(
+      `INSERT INTO resume_versions (id,job_id,name,template_id,content_json,validation_json,status,last_export_path,created_at,updated_at)
+       VALUES ('resume-automation-1','job-automation-1','Legacy Resume','mir-standard','{}','[]','draft','','created','updated')`,
+    );
+
+    applyMigration(database, 9);
+
+    expect(tableNames(database)).toEqual(expect.arrayContaining([
+      "job_sources", "job_matches", "job_match_analysis_history", "job_duplicate_events",
+      "job_search_preferences", "application_packages", "application_answer_vault", "job_automation_runs",
+    ]));
+    expect(columnNames(database, "jobs")).toEqual(expect.arrayContaining([
+      "source_id", "external_id", "normalized_title", "description_text", "canonical_url",
+      "content_hash", "automation_status", "changed_since_analysis",
+    ]));
+    expect(database.exec("SELECT raw_description,description_text,discovered_at FROM jobs WHERE id='job-automation-1'")[0].values[0])
+      .toEqual(["Preserve this description", "Preserve this description", "created"]);
+    expect(database.exec("SELECT job_id FROM resume_versions WHERE id='resume-automation-1'")[0].values[0][0]).toBe("job-automation-1");
+    expect(database.exec("SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1")[0].values[0][0]).toBe(9);
+    database.close();
+  });
 });
