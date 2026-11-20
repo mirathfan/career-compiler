@@ -1,6 +1,6 @@
 import { MockAIProvider } from "../ai/mockProvider";
 import { MemoryRepository } from "../database/memoryRepository";
-import { populateFitFixtures } from "./fitFixtures";
+import { FIT_FIXTURE_DATE, populateFitFixtures } from "./fitFixtures";
 import { rescoreJob } from "../job-automation/runner";
 import { createMasterResumeFromProfile } from "../tailoring/masterResume";
 
@@ -9,7 +9,7 @@ export async function createSampleWorkspace(full = false) {
   const saved = await populateFitFixtures(repository, !full);
   for (const job of saved) {
     if (!full) { const analysis = await new MockAIProvider().analyzeJob({ company: job.company, roleTitle: job.roleTitle, rawDescription: job.rawDescription, sourceUrl: "", modelName: "mock" }); await repository.saveJob({ ...job, rawDescription: job.rawDescription, analysisJson: analysis.data }); }
-    await rescoreJob(repository, job.id);
+    await rescoreJob(repository, job.id, FIT_FIXTURE_DATE);
   }
   const [profile, items, facts, skills, settings] = await Promise.all([repository.getProfile(), repository.listCareerItems(), repository.listCareerFacts(), repository.listSkills(), repository.getSettings()]);
   const content = createMasterResumeFromProfile({ profile: profile!, items, facts, skills, settings: settings.templateSettings });
