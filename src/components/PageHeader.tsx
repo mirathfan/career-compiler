@@ -19,7 +19,7 @@ export function PageHeader({
       <div className={clsx("mx-auto flex w-full max-w-[1560px] flex-wrap items-start justify-between gap-5")}>
         <div className="min-w-0">
           <p className="eyebrow">{eyebrow}</p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-normal text-slate-950">{title}</h2>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{title}</h2>
           {description ? <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p> : null}
           {meta ? <div className="mt-3 flex flex-wrap gap-2">{meta}</div> : null}
         </div>

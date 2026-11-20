@@ -597,7 +597,7 @@ function AnswerLibrary({
   );
 }
 
-export function CandidateBrainPage() {
+export function CandidateBrainPage({ embedded = false }: { embedded?: boolean } = {}) {
   const repository = useRepository();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -704,6 +704,7 @@ export function CandidateBrainPage() {
 
   return (
     <div>
+      {!embedded ? (
       <PageHeader
         eyebrow="Profile source"
         title="My Profile Data"
@@ -716,7 +717,8 @@ export function CandidateBrainPage() {
           </>
         }
       />
-      <div className="page-body space-y-5">
+) : null}
+      <div className={embedded ? "workspace-content space-y-5" : "page-body space-y-5"}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <Tabs
             value={activeTab}

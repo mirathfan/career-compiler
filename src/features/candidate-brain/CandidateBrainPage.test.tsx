@@ -32,7 +32,7 @@ describe("Candidate Brain sensitive vault", () => {
     renderApp();
 
     await user.click(await screen.findByRole("button", { name: /run safe seed/i }));
-    await user.click(screen.getByRole("link", { name: "Candidate Brain" }));
+    await user.click(screen.getByRole("link", { name: "Profile" }));
     expect(await screen.findByRole("heading", { name: "Resume source of truth" })).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /Sensitive answers/i }));
 

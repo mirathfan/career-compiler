@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, Circle, HelpCircle, Info, Loader2, Lock, ShieldAlert, ShieldCheck } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -201,14 +202,24 @@ export function Tabs<T extends string>({
   onChange: (value: T) => void;
   label?: string;
 }) {
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   return (
     <div className="segmented" role="tablist" aria-label={label}>
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <button
           key={tab.id}
           type="button"
           role="tab"
           aria-selected={value === tab.id}
+          tabIndex={value === tab.id ? 0 : -1}
+          ref={(element) => { tabRefs.current[index] = element; }}
+          onKeyDown={(event) => {
+            if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+            onChange(tabs[next].id);
+            tabRefs.current[next]?.focus();
+          }}
           className={clsx("segmented-item", value === tab.id && "segmented-item-active")}
           onClick={() => onChange(tab.id)}
         >
@@ -223,7 +234,7 @@ export function Tabs<T extends string>({
 export function ProgressChecklist({
   items,
 }: {
-  items: Array<{ label: string; detail?: string; complete: boolean; warning?: boolean }>;
+  items: Array<{ label: string; detail?: string; complete: boolean; warning?: boolean; statusLabel?: string }>;
 }) {
   return (
     <div className="space-y-2">
@@ -238,6 +249,7 @@ export function ProgressChecklist({
             />
             <div className="min-w-0">
               <p className="text-sm font-semibold text-slate-800">{item.label}</p>
+              {item.statusLabel ? <p className="mt-0.5 text-xs font-medium text-slate-600">{item.statusLabel}</p> : null}
               {item.detail ? <p className="mt-0.5 text-xs leading-5 text-slate-500">{item.detail}</p> : null}
             </div>
           </div>
