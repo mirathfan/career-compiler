@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TailoredResume } from "../../types/domain";
 import { MemoryRepository } from "../database/memoryRepository";
+import { updatePackageResume } from "../job-automation/applicationPackages";
 import { handleExtensionRequest } from "./requestProcessor";
 import {
   EXTENSION_PROTOCOL_VERSION,
@@ -54,13 +55,16 @@ async function preparedRepository() {
     requiresReview: false,
     verificationStatus: "verified",
   });
-  await repository.saveResumeVersion({
+  await repository.saveJob({ id: "fixture-job", company: "ExampleCo", roleTitle: "Software Engineer", sourceUrl: "https://boards.greenhouse.io/example/jobs/123", applicationUrl: "https://boards.greenhouse.io/example/jobs/123", rawDescription: "Build React and TypeScript product workflows.", descriptionText: "Build React and TypeScript product workflows." });
+  const resume = await repository.saveResumeVersion({
     jobId: "fixture-job",
     name: "Fixture exported resume",
     contentJson: fixtureResume,
     status: "exported",
     lastExportPath: "/tmp/careercompiler-fixture.pdf",
   });
+  await repository.saveApplicationPackage({ jobId: "fixture-job" });
+  await updatePackageResume(repository, "fixture-job", resume.id, true);
   return repository;
 }
 
@@ -97,12 +101,23 @@ function prepareRequest(): Extract<ExtensionRequest, { type: "prepare_applicatio
 }
 
 describe("extension request processor", () => {
+  it("reports file preparation failure without leaking file details or pretending it attached", async () => {
+    const repository=await preparedRepository();
+    const result=await handleExtensionRequest({repository,request:prepareRequest(),authorizeResumeFile:async()=>{throw new Error("private synthetic file contents must not escape");}}) as ExtensionResponse<PreparedApplication>;
+    expect(result.ok).toBe(true);expect(result.data?.resumePreparationStatus).toBe("failed");expect(result.data?.resume).toBeUndefined();expect(JSON.stringify(result)).not.toContain("private synthetic file contents");
+    expect(result.data?.fields.find(field=>field.fieldId==="resume")?.requiresReview).toBe(true);
+  });
+  it("rejects a destination forged from an existing approved company's title", async () => {
+    const repository=await preparedRepository();const request=prepareRequest();request.pageContext.url="https://boards.greenhouse.io/other/jobs/456";
+    const result=await handleExtensionRequest({repository,request});expect(result.ok).toBe(false);expect(result.error?.message).toContain("application_destination_mismatch");
+  });
   it("prepares a grounded application draft with an authorized resume and persists edits", async () => {
     const repository = await preparedRepository();
     const prepared = await handleExtensionRequest({
       repository,
       request: prepareRequest(),
       authorizeResumeFile: async () => ({
+        contentDigest: "a".repeat(64),
         authorizedFileReference: "resume-ref",
         filename: "CareerCompiler.pdf",
         mimeType: "application/pdf",
@@ -117,7 +132,8 @@ describe("extension request processor", () => {
     expect(preparedApplication.data?.companyName).toBe("ExampleCo");
     expect(preparedApplication.data?.resume?.authorizedFileReference).toBe("resume-ref");
     expect(preparedApplication.data?.fields.some((field) => field.fillKind === "resume_file")).toBe(true);
-    expect(preparedApplication.data?.fields.find((field) => field.fieldId === "country")?.answer).toBe("United States");
+    expect(preparedApplication.data?.fields.find(field => field.fillKind === "resume_file")).toMatchObject({ originalQuestion: "Resume / CV", detectedFieldType: "input" });
+    expect(preparedApplication.data?.fields.find((field) => field.fieldId === "country")?.answerSource).toBe("user_required");
     expect(preparedApplication.data?.fields.find((field) => field.fieldId === "sponsor")?.answerSource).toBe("locked_sensitive");
 
     const application = await repository.getApplication(preparedApplication.data!.applicationId);
@@ -155,10 +171,13 @@ describe("extension request processor", () => {
     const fields = await repository.listApplicationFields(preparedApplication.data!.applicationId);
     expect(fields.find((field) => field.id === github?.recordId)?.userEdited).toBe(true);
 
+    await handleExtensionRequest({ repository, request: { type: "authorize_fill", protocolVersion: EXTENSION_PROTOCOL_VERSION,
+      requestId: "authorize-fixture", extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", credential: "test", prepared: preparedApplication.data!, pageUrl: prepareRequest().pageContext.url } });
     const marked = await handleExtensionRequest({
       repository,
       request: {
         type: "mark_filled",
+        fillAuthorizationId: preparedApplication.data!.authorization!.id,
         protocolVersion: EXTENSION_PROTOCOL_VERSION,
         requestId: "filled-test",
         extensionId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

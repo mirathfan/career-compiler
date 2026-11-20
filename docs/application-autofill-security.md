@@ -8,11 +8,14 @@ CareerCompiler uses the existing browser-extension/native-host bridge. Autofill 
 - Package approval requires an exported PDF and no blocking resume validation errors.
 - The extension receives only the current approved package, detected fields, approved answers, and a short-lived authorized resume-file reference.
 - Opening or filling a page does not update application status to `applied`. Only the user can mark the tracker after manual submission.
+- An AI match result—even a valid high score—cannot approve a package, select consequential answers, open an application, or mark it applied. Resume generation remains manual in this milestone, and package approval remains a distinct explicit action.
 - The code contains no ATS submission request, final-submit click, CAPTCHA bypass, authenticated LinkedIn scraper, proxy rotation, or account rotation.
 
 ## Consequential fields
 
 Work authorization, sponsorship, citizenship, clearance, salary, disability, veteran status, gender, race/ethnicity, criminal history, legal attestations, and signatures are always marked sensitive and require manual confirmation. They are never guessed. Verified answer-vault entries remain excluded from AI context unless the user explicitly approves the exact key for that use.
+
+Job-match AI never receives answer-vault entries. Its bounded evidence packet is limited to relevant enabled skills, permitted career items, verified/user-provided facts, numeric tokens, and resume-profile IDs. Failed, invalid, and stale output cannot affect an active score or application package.
 
 ## Extension contract
 

@@ -275,20 +275,26 @@ function bytesFromBase64(base64) {
   return bytes;
 }
 
+const attachedFiles = new WeakMap();
 function fillResumeField(field, answer) {
   const element = elementForField(field);
-  if (!(element instanceof HTMLInputElement) || element.type !== "file") return { ok: false, reason: "resume file input not found" };
-  if (!answer.resumeFile?.fileBase64) return { ok: false, reason: "resume payload not available" };
-  const file = new File(
-    [bytesFromBase64(answer.resumeFile.fileBase64)],
-    answer.resumeFile.filename,
-    { type: answer.resumeFile.mimeType || "application/pdf" },
-  );
-  const transfer = new DataTransfer();
-  transfer.items.add(file);
-  element.files = transfer.files;
-  dispatchFormEvents(element);
-  return { ok: true };
+  if (!(element instanceof HTMLInputElement) || element.type !== "file") return { ok: false, attachmentStatus: "failed", reason: "resume file input not found" };
+  const resume = answer.resumeFile;
+  if (!resume?.fileBase64) return { ok: false, attachmentStatus: "prepared", reason: "Resume data is missing; prepare a fresh approved payload." };
+  if (typeof DataTransfer !== "function") return { ok: false, attachmentStatus: "not_verified", reason: "Browser file attachment is unavailable. Attach the approved PDF manually; review before retrying." };
+  const signature = JSON.stringify([resume.filename, resume.mimeType, resume.fileBase64]);
+  const prior = attachedFiles.get(element);
+  if (prior?.signature === signature && element.files?.length === 1 && element.files[0] === prior.file) return { ok: true, attachmentStatus: "attached", unchanged: true };
+  try {
+    const file = new File([bytesFromBase64(resume.fileBase64)], resume.filename, { type: resume.mimeType || "application/pdf" });
+    const transfer = new DataTransfer(); transfer.items.add(file); element.files = transfer.files;
+    if (element.files?.length !== 1 || element.files[0].name !== file.name || element.files[0].size !== file.size) return { ok: false, attachmentStatus: "not_verified", reason: "Attachment could not be confirmed. Review the file input manually." };
+    const selectedFile = element.files[0];
+    dispatchFormEvents(element);
+    if (!element.isConnected || element.type !== "file" || element.files?.length !== 1 || element.files[0] !== selectedFile || element.files[0].name !== file.name || element.files[0].size !== file.size || element.files[0].type !== file.type) return { ok: false, attachmentStatus: "not_verified", reason: "The form changed during attachment. Review and prepare fresh authorization." };
+    attachedFiles.set(element, { signature, file: element.files[0] });
+    return { ok: true, attachmentStatus: "attached" };
+  } catch { return { ok: false, attachmentStatus: "failed", reason: "File attachment failed or was interrupted. Review completed fields and attach the approved PDF manually; retry requires fresh authorization." }; }
 }
 
 function targetForHighlight(field) {
@@ -363,7 +369,7 @@ function ensureFooter() {
   const form = document.querySelector("form") || document.body;
   const footer = document.createElement("div");
   footer.className = "cc-autofill-footer";
-  footer.textContent = "CareerCompiler filled this application. Review all highlighted answers and submit manually.";
+  footer.textContent = "CareerCompiler processed available fields. Review all highlighted answers and submit manually.";
   form.appendChild(footer);
 }
 
@@ -383,6 +389,8 @@ function fillAnswers(answers, options = {}) {
       results.push({ fieldId: answer.fieldId, ok: false, reason: "field disappeared" });
       continue;
     }
+    const question = value => String(value).replace(/\s+/g, " ").trim().toLowerCase();
+    if ((answer.originalQuestion && question(answer.originalQuestion) !== question(field.label)) || (answer.detectedFieldType && answer.detectedFieldType !== field.detectedFieldType)) { results.push({fieldId:answer.fieldId,ok:false,reason:"Field question or control changed. Scan and prepare again."}); continue; }
     if (answer.answerSource === "user_required" || answer.confidence < 0.65) {
       highlight(field, { ...answer, requiresReview: true }, "red");
       markFieldMetadata(field, answer, valueForField(field));
@@ -390,14 +398,17 @@ function fillAnswers(answers, options = {}) {
       results.push({ fieldId: answer.fieldId, ok: false, reason: "user input required" });
       continue;
     }
-    const result = answer.fillKind === "resume_file" ? fillResumeField(field, answer) : fillRegularField(field, answer.answer);
+    let result;
+    try { result = answer.fillKind === "resume_file" ? fillResumeField(field, answer) : fieldStates.has(field.id) && valueForField(field) === String(answer.answer ?? "") ? { ok: true, unchanged: true } : fillRegularField(field, answer.answer); }
+    catch { result = { ok: false, reason: "Field operation failed or was interrupted. Review before retrying." }; }
     highlight(field, answer, result.ok ? undefined : "yellow");
     markFieldMetadata(field, answer, valueForField(field));
     updateState(field, answer, result);
     results.push({ fieldId: answer.fieldId, ...result });
   }
   ensureFooter();
-  return { ok: true, results, editedCount: edited.length };
+  const failed = results.some(result => !result.ok);
+  return { ok: !failed, partial: failed && results.some(result => result.ok), results, editedCount: edited.length, ...(failed ? { error: { code: "partial_fill", message: "Some fields or attachments need manual attention. Successful fields were retained; prepare fresh authorization before retrying.", retryable: true } } : {}) };
 }
 
 function trackUserEdit(target) {
@@ -437,13 +448,26 @@ document.addEventListener("change", (event) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+const usedAuthorizations = new Map();
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  const origin = `chrome-extension://${chrome.runtime.id}`;
+  if (!sender || sender.id !== chrome.runtime.id || sender.origin !== origin || sender.url !== `${origin}/background.js` || sender.tab || !message || typeof message !== "object") {
+    sendResponse({ ok: false, error: { code: "sender_denied", message: "Only the CareerCompiler service worker may operate this form." } }); return false;
+  }
   if (message?.type === "CC_SCAN_FORM") {
     const fields = scanFields();
     sendResponse({ ok: true, fields, pageContext: extractPageContext(fields), atsPlatform: detectAtsPlatform(), title: document.title, url: location.href });
     return true;
   }
   if (message?.type === "CC_FILL_FORM") {
+    if (typeof message.expectedPageUrl !== "string" || message.expectedPageUrl !== location.href) { sendResponse({ ok: false, error: { code: "page_changed", message: "Application destination changed. Prepare fresh authorization." } }); return true; }
+    if (typeof message.authorization?.id !== "string" || !message.authorization.id || message.authorization.hashVersion !== "cc-json-sha256-v1" || !Number.isFinite(message.authorization.expiresAtMs) || message.authorization.expiresAtMs <= Date.now() || usedAuthorizations.has(message.authorization.id) || !Array.isArray(message.answers)) {
+      sendResponse({ ok: false, error: { code: "payload_expired", message: "A fresh desktop authorization is required." } });
+      return true;
+    }
+    for (const [id, expiry] of usedAuthorizations) if (expiry <= Date.now()) usedAuthorizations.delete(id);
+    if (usedAuthorizations.size >= 256) { sendResponse({ ok: false, error: { code: "authorization_capacity", message: "Wait for prior authorizations to expire, then prepare again." } }); return true; }
+    usedAuthorizations.set(message.authorization.id, message.authorization.expiresAtMs);
     currentApplicationId = message.applicationId || currentApplicationId;
     sendResponse({ ok: true, applicationId: currentApplicationId, ...fillAnswers(message.answers || [], { forceUserEdits: Boolean(message.forceUserEdits) }) });
     return true;

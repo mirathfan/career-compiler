@@ -1,3 +1,7 @@
+import { supportedApplicationUrl } from "../../../apps/careercompiler-extension/src/authorizationContract.js";
+import { isIsolatedRuntime } from "../acceptance/runtime";
+import { jobFingerprint, resumeFingerprint } from "../job-automation/safety";
+import { issueFillAuthorization, consumeFillAuthorization, requireConsumedFill } from "./fillAuthorization";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ApplicationFieldRecord,
@@ -6,6 +10,7 @@ import type {
   ResumeVersion,
 } from "../../types/domain";
 import type { AppRepository } from "../database/repository";
+import { requireApprovedPackage } from "../job-automation/applicationPackages";
 import { prepareApplicationReview } from "../applications/applicationReview";
 import { normalizeDetectedField } from "../applications/questionClassifier";
 import type {
@@ -17,7 +22,7 @@ import type {
   JobPageContext,
   PreparedApplication,
 } from "./protocol";
-import { extensionError, extensionOk } from "./protocol";
+import { extensionError, extensionOk, EXTENSION_PROTOCOL_VERSION } from "./protocol";
 
 interface HandleExtensionRequestInput {
   repository: AppRepository;
@@ -26,10 +31,12 @@ interface HandleExtensionRequestInput {
     applicationId: string;
     resumeVersionId: string;
     path: string;
+    expectedDigest: string;
   }) => Promise<AuthorizedResumeFile>;
 }
 
 type NativeAuthorizedResumeFile = {
+  contentDigest: string;
   authorizedFileReference: string;
   filename: string;
   mimeType: string;
@@ -42,9 +49,11 @@ async function defaultAuthorizeResumeFile(input: {
   applicationId: string;
   resumeVersionId: string;
   path: string;
+  expectedDigest: string;
 }): Promise<AuthorizedResumeFile> {
   const result = await invoke<NativeAuthorizedResumeFile>("extension_authorize_resume_file", input);
   return {
+    contentDigest: result.contentDigest,
     authorizedFileReference: result.authorizedFileReference,
     filename: result.filename,
     mimeType: result.mimeType,
@@ -134,6 +143,7 @@ async function findOrCreateJob(repository: AppRepository, context: JobPageContex
       (job.company.toLowerCase() === company.toLowerCase() &&
         job.roleTitle.toLowerCase() === roleTitle.toLowerCase()),
   );
+  if (existing && (await repository.listApplicationPackages()).some((item) => item.jobId === existing.id) && ![existing.applicationUrl, existing.sourceUrl].includes(sourceUrl)) throw new Error("application_destination_mismatch|Use the package's reviewed application destination.");
   return repository.saveJob({
     id: existing?.id,
     company,
@@ -245,6 +255,7 @@ async function prepareApplication(
     return extensionError(request.requestId, "page_context_invalid", "The extension did not send a page URL.", false);
   }
   const job = await findOrCreateJob(repository, request.pageContext);
+  const approvedPackage = await requireApprovedPackage(repository, job.id);
   let application = await findOrCreateApplication(repository, job, request.pageContext);
   const normalizedFields = (request.fields ?? []).map(normalizeExtensionField);
   const resumeUploadFields = (request.fields ?? []).filter(isResumeUploadField);
@@ -255,7 +266,11 @@ async function prepareApplication(
   const hardConflicts: string[] = [];
 
   const resumes = await repository.listResumeVersions();
-  const selectedResume = selectedResumeForApplication(resumes, application.resumeVersionId, job.id);
+  const selectedResume = approvedPackage
+    ? resumes.find((resume) => resume.id === approvedPackage.resumeVersionId) ?? null
+    : selectedResumeForApplication(resumes, application.resumeVersionId, job.id);
+  const revision = (await repository.listSafetyRecords("package_revision")).find(record => record.id === approvedPackage?.id);
+  const pdfDigest = (revision?.value.pdfProvenance as { digest?: string } | undefined)?.digest ?? "";
   let authorizedResume: Awaited<ReturnType<typeof authorizeResumeFile>> | null = null;
   if (selectedResume?.lastExportPath) {
     try {
@@ -263,7 +278,9 @@ async function prepareApplication(
         applicationId: application.id,
         resumeVersionId: selectedResume.id,
         path: selectedResume.lastExportPath,
+        expectedDigest: pdfDigest,
       });
+      if (authorizedResume.contentDigest !== pdfDigest) throw new Error("package_pdf_changed");
       application = await repository.saveApplication({
         ...application,
         resumeVersionId: selectedResume.id,
@@ -271,8 +288,8 @@ async function prepareApplication(
       if (!authorizedResume.fileBase64) {
         warnings.push("Selected resume is authorized but too large for inline browser upload; choose it manually.");
       }
-    } catch (error) {
-      warnings.push(error instanceof Error ? error.message : String(error));
+    } catch {
+      warnings.push("Resume preparation failed. Verify the selected exported PDF, then prepare fresh authorization.");
     }
   } else if (resumeUploadFields.length > 0) {
     warnings.push("No exported resume PDF is linked to this application.");
@@ -300,7 +317,7 @@ async function prepareApplication(
       applicationId: application.id,
       originalQuestion: fieldQuestion(resumeField),
       normalizedQuestionType: "unknown",
-      detectedFieldType: "file",
+      detectedFieldType: cleanText(resumeField.detectedFieldType, "input"),
       generatedAnswer: authorizedResume?.filename ?? "",
       finalAnswer: authorizedResume?.filename ?? "",
       answerSource: authorizedResume?.fileBase64 ? "fixed_profile" : "user_required",
@@ -320,7 +337,7 @@ async function prepareApplication(
       recordId: saved.id,
       originalQuestion: saved.originalQuestion,
       normalizedQuestionType: "unknown",
-      detectedFieldType: "file",
+      detectedFieldType: cleanText(resumeField.detectedFieldType, "input"),
       answer: authorizedResume?.filename ?? "",
       answerSource: saved.answerSource,
       confidence: saved.confidence,
@@ -343,7 +360,10 @@ async function prepareApplication(
     });
   }
 
+  await requireApprovedPackage(repository, job.id, selectedResume?.id);
   const prepared: PreparedApplication = {
+    resumePreparationStatus: authorizedResume ? (authorizedResume.fileBase64 ? "prepared" : "not_verified") : "failed",
+    contentFingerprint: { job: jobFingerprint(job), resume: selectedResume ? await resumeFingerprint(selectedResume) : "", pdf: pdfDigest },
     applicationId: application.id,
     jobId: job.id,
     companyName: application.company,
@@ -362,6 +382,7 @@ async function prepareApplication(
     warnings,
     hardConflicts,
   };
+  prepared.authorization = await issueFillAuthorization(repository, prepared, request.extensionId);
   return extensionOk(request.requestId, prepared);
 }
 
@@ -373,6 +394,7 @@ async function saveApplicationEdits(
   if (!application) {
     return extensionError(request.requestId, "application_missing", "The application draft no longer exists.", false);
   }
+  await requireApprovedPackage(repository, application.jobId, application.resumeVersionId);
   const existingFields = await repository.listApplicationFields(application.id);
   const fieldsById = new Map(existingFields.map((field) => [field.id, field]));
   const fieldsByQuestion = new Map(
@@ -404,6 +426,7 @@ async function saveApplicationEdits(
     });
     saved.push(savedField);
   }
+  await requireApprovedPackage(repository, application.jobId, application.resumeVersionId);
   await repository.saveApplication({
     ...application,
     status: application.status === "applied" ? "applied" : "ready",
@@ -421,12 +444,15 @@ async function markFilled(
   if (!application) {
     return extensionError(request.requestId, "application_missing", "The application draft no longer exists.", false);
   }
+  await requireConsumedFill(repository, application.id, request.fillAuthorizationId, request.extensionId);
   await repository.saveApplication({
     ...application,
     status: application.status === "applied" ? "applied" : "ready",
     automationMode: "autofill_manual_submit",
     nextAction: application.nextAction || "Review highlighted browser fields and submit manually.",
   });
+  const record = (await repository.listSafetyRecords("fill_token")).find((record) => record.id === request.fillAuthorizationId)!;
+  await repository.saveSafetyRecord({ ...record, value: { ...record.value, state: "completed" } });
   return extensionOk(request.requestId, { applicationId: application.id, status: "ready" });
 }
 
@@ -436,14 +462,21 @@ export async function handleExtensionRequest({
   authorizeResumeFile = defaultAuthorizeResumeFile,
 }: HandleExtensionRequestInput): Promise<ExtensionResponse> {
   try {
+    if (request.protocolVersion !== EXTENSION_PROTOCOL_VERSION) return extensionError(request.requestId, "version_mismatch", "Update the extension before preparing or filling an application.");
+    const destination = request.type === "authorize_fill" ? request.pageUrl : (request.type === "prepare_application" || request.type === "capture_job") ? request.pageContext.url : undefined;
+    if (destination !== undefined && !supportedApplicationUrl(destination) && !(isIsolatedRuntime() && /^http:\/\/127\.0\.0\.1:5297\/(greenhouse|lever|ashby|multi-step|dynamic)\.html$/.test(destination))) return extensionError(request.requestId, "application_origin_denied", "Unsupported application destination.");
+    if (request.type === "authorize_fill") {
+      await consumeFillAuthorization(repository, request.prepared, request.extensionId, request.pageUrl);
+      return extensionOk(request.requestId, { authorized: true });
+    }
     if (request.type === "prepare_application") {
-      return await prepareApplication(repository, request, authorizeResumeFile);
+      return await repository.transaction((transaction) => prepareApplication(transaction, request, authorizeResumeFile));
     }
     if (request.type === "save_application_edits") {
       return await saveApplicationEdits(repository, request);
     }
     if (request.type === "mark_filled") {
-      return await markFilled(repository, request);
+      return await repository.transaction((transaction) => markFilled(transaction, request));
     }
     if (request.type === "capture_job") {
       const job = await findOrCreateJob(repository, request.pageContext);

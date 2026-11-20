@@ -19,7 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 
 pub const NATIVE_HOST_NAME: &str = "com.mirathfan.careercompiler";
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 3;
 
 const MAX_CHROME_MESSAGE_BYTES: u32 = 1024 * 1024;
 const MAX_IPC_MESSAGE_BYTES: u32 = 2 * 1024 * 1024;
@@ -140,6 +140,7 @@ pub struct PairingCodeResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorizedResumeFile {
+    content_digest: String,
     pub authorized_file_reference: String,
     pub filename: String,
     pub mime_type: String,
@@ -720,11 +721,62 @@ pub fn extension_complete_pending_request(
     Ok(false)
 }
 
+const MAX_APPROVED_PDF_BYTES: u64 = 5 * 1024 * 1024;
+fn read_pdf_bytes(source: &Path) -> Result<Vec<u8>, String> {
+    let mut file = fs::File::open(source).map_err(|_| "resume_read_failed")?;
+    let metadata = file.metadata().map_err(|_| "resume_read_failed")?;
+    if !metadata.is_file() || metadata.len() > MAX_APPROVED_PDF_BYTES {
+        return Err("resume_pdf_invalid".into());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_APPROVED_PDF_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "resume_read_failed")?;
+    if bytes.len() as u64 > MAX_APPROVED_PDF_BYTES
+        || !bytes.starts_with(b"%PDF-")
+        || !bytes.windows(5).any(|part| part == b"%%EOF")
+    {
+        return Err("resume_pdf_invalid".into());
+    }
+    Ok(bytes)
+}
+fn pdf_digest(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn verified_pdf_bytes(source: &Path, expected_digest: &str) -> Result<Vec<u8>, String> {
+    let bytes = read_pdf_bytes(source)?;
+    if pdf_digest(&bytes) != expected_digest {
+        return Err("resume_pdf_changed|Fresh approval required.".into());
+    }
+    Ok(bytes)
+}
+
+#[tauri::command]
+pub fn resume_pdf_snapshot(app: tauri::AppHandle, path: String) -> Result<Value, String> {
+    let source = PathBuf::from(path);
+    if let Some(root) = crate::acceptance::root_for_identifier(&app.config().identifier)? {
+        if ![root.join("resume-a.pdf"), root.join("resume-b.pdf")].contains(&source)
+            || source
+                .symlink_metadata()
+                .is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err("resume_path_denied".into());
+        }
+    }
+    let bytes = read_pdf_bytes(&source)?;
+    Ok(
+        json!({"contentDigest":pdf_digest(&bytes),"sizeBytes":bytes.len(),"fileBase64":BASE64.encode(&bytes)}),
+    )
+}
+
 #[tauri::command]
 pub fn extension_authorize_resume_file(
     application_id: String,
     resume_version_id: String,
     path: String,
+    expected_digest: String,
 ) -> Result<AuthorizedResumeFile, String> {
     let source = PathBuf::from(path);
     let source = source
@@ -745,6 +797,8 @@ pub fn extension_authorize_resume_file(
             "resume_not_pdf|Only exported PDF resumes can be authorized for upload.".to_string(),
         );
     }
+    let bytes = verified_pdf_bytes(&source, &expected_digest)?;
+    let content_digest = pdf_digest(&bytes);
     cleanup_expired_exports().ok();
     let safe_application = safe_path_segment(&application_id);
     let safe_resume = safe_path_segment(&resume_version_id);
@@ -758,7 +812,15 @@ pub fn extension_authorize_resume_file(
     fs::create_dir_all(&export_dir).map_err(|error| format!("resume_export_dir_failed|{error}"))?;
     let reference = format!("resume-{safe_resume}-{}", random_token(8));
     let target = export_dir.join(format!("{reference}-{filename}"));
-    fs::copy(&source, &target).map_err(|error| format!("resume_export_failed|{error}"))?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .map_err(|_| "resume_export_failed")?;
+    output
+        .write_all(&bytes)
+        .map_err(|_| "resume_export_failed")?;
+    output.sync_all().map_err(|_| "resume_export_failed")?;
     #[cfg(unix)]
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("resume_export_permission_failed|{error}"))?;
@@ -766,13 +828,12 @@ pub fn extension_authorize_resume_file(
         .map_err(|error| format!("resume_export_metadata_failed|{error}"))?
         .len();
     let file_base64 = if size <= SMALL_FILE_INLINE_LIMIT {
-        Some(BASE64.encode(
-            fs::read(&target).map_err(|error| format!("resume_export_read_failed|{error}"))?,
-        ))
+        Some(BASE64.encode(&bytes))
     } else {
         None
     };
     Ok(AuthorizedResumeFile {
+        content_digest,
         authorized_file_reference: reference,
         filename,
         mime_type: "application/pdf".to_string(),
@@ -900,6 +961,77 @@ fn handle_ipc_stream(state: ExtensionBridgeState, mut stream: UnixStream) {
     }
 }
 
+fn supported_application_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port().is_none()
+            && url.path() != "/"
+            && matches!(
+                url.host_str(),
+                Some(
+                    "boards.greenhouse.io"
+                        | "job-boards.greenhouse.io"
+                        | "jobs.lever.co"
+                        | "jobs.ashbyhq.com"
+                )
+            )
+    })
+}
+fn validate_browser_command(request: &Value) -> Result<(), &'static str> {
+    if !request["requestId"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty() && id.len() <= 100)
+    {
+        return Err("request_schema_invalid");
+    }
+    match request["type"].as_str() {
+        Some("prepare_application" | "capture_job") => {
+            if !request["pageContext"]["url"]
+                .as_str()
+                .is_some_and(supported_application_url)
+            {
+                return Err("application_origin_denied");
+            }
+            if request["type"] == "prepare_application"
+                && !request["fields"].as_array().is_some_and(|fields| {
+                    fields.len() <= 100
+                        && fields.iter().all(|field| {
+                            field["id"]
+                                .as_str()
+                                .is_some_and(|id| !id.is_empty() && id.len() <= 200)
+                                && field["label"].is_string()
+                        })
+                })
+            {
+                return Err("request_schema_invalid");
+            }
+        }
+        Some("authorize_fill") => {
+            if !request["pageUrl"]
+                .as_str()
+                .is_some_and(supported_application_url)
+            {
+                return Err("application_origin_denied");
+            }
+            if request["prepared"]["authorization"]["hashVersion"] != "cc-json-sha256-v1" {
+                return Err("hash_version_mismatch");
+            }
+        }
+        Some("mark_filled" | "save_application_edits") => {
+            if !request["applicationId"].is_string() {
+                return Err("request_schema_invalid");
+            }
+            if request["type"] == "mark_filled" && !request["fillAuthorizationId"].is_string() {
+                return Err("request_schema_invalid");
+            }
+        }
+        _ => return Err("unknown_message_type"),
+    }
+    Ok(())
+}
+
 fn handle_host_envelope(state: &ExtensionBridgeState, envelope: HostEnvelope) -> Value {
     let request = envelope.request;
     let request_id = request_id(&request);
@@ -928,7 +1060,19 @@ fn handle_host_envelope(state: &ExtensionBridgeState, envelope: HostEnvelope) ->
     match message_type {
         "ping" => handle_ping(request_id, &origin_extension_id),
         "pair" => handle_pair(state, request_id, &origin_extension_id, &request),
-        "prepare_application" | "save_application_edits" | "mark_filled" | "capture_job" => {
+        "prepare_application"
+        | "save_application_edits"
+        | "mark_filled"
+        | "capture_job"
+        | "authorize_fill" => {
+            if let Err(code) = validate_browser_command(&request) {
+                return response_error(
+                    request_id,
+                    code,
+                    "Browser command or destination rejected.",
+                    false,
+                );
+            }
             if let Err(response) =
                 validate_paired_request(request_id.clone(), &origin_extension_id, &request)
             {
@@ -1380,5 +1524,97 @@ mod tests {
             "socket path was too long: {}",
             socket_path.to_string_lossy()
         );
+    }
+}
+
+#[cfg(test)]
+mod phase2d_tests {
+    use super::*;
+    #[test]
+    fn browser_origins_are_exact_https_allowlist() {
+        assert!(supported_application_url(
+            "https://jobs.lever.co/synthetic/apply"
+        ));
+        for url in [
+            "http://jobs.lever.co/x",
+            "https://jobs.lever.co.evil.invalid/x",
+            "https://user@jobs.lever.co/x",
+            "file:///tmp/x",
+            "http://127.0.0.1:5297/lever.html",
+            "https://jobs.lever.co/",
+        ] {
+            assert!(!supported_application_url(url));
+        }
+    }
+    #[test]
+    fn browser_command_schema_and_hash_version_fail_closed() {
+        assert!(
+            validate_browser_command(&json!({"type":"run_openai_structured","requestId":"x"}))
+                .is_err()
+        );
+        assert!(validate_browser_command(&json!({"type":"authorize_fill","requestId":"x","pageUrl":"https://jobs.lever.co/x","prepared":{"authorization":{"hashVersion":"legacy"}}})).is_err());
+        assert!(validate_browser_command(&json!({"type":"prepare_application","requestId":"x","pageContext":{"url":"https://jobs.lever.co/x"},"fields":[{"id":"x","label":"Email"}]})).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod pdf_provenance_tests {
+    use super::*;
+    fn temporary_pdf() -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("careercompiler-pdf-unit-{}", random_token(8)));
+        fs::create_dir(&root).unwrap();
+        root.join("synthetic.pdf")
+    }
+    #[test]
+    fn changed_same_path_missing_corrupt_and_unreadable_fail_closed() {
+        let path = temporary_pdf();
+        let a = b"%PDF-1.7 synthetic-A %%EOF";
+        let b = b"%PDF-1.7 synthetic-B %%EOF";
+        fs::write(&path, a).unwrap();
+        let digest = pdf_digest(a);
+        assert_eq!(verified_pdf_bytes(&path, &digest).unwrap(), a);
+        fs::write(&path, b).unwrap();
+        assert!(verified_pdf_bytes(&path, &digest).is_err());
+        fs::write(&path, b"not a pdf").unwrap();
+        assert!(read_pdf_bytes(&path).is_err());
+        fs::write(&path, a).unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            assert!(read_pdf_bytes(&path).is_err());
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        fs::remove_file(&path).unwrap();
+        assert!(read_pdf_bytes(&path).is_err());
+        fs::remove_dir(path.parent().unwrap()).unwrap();
+    }
+    #[test]
+    fn concurrent_replacement_never_authorizes_other_bytes() {
+        let path = temporary_pdf();
+        let a = b"%PDF-1.7 synthetic-A %%EOF";
+        let b = b"%PDF-1.7 synthetic-B %%EOF";
+        fs::write(&path, a).unwrap();
+        let digest = pdf_digest(a);
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            for _ in 0..100 {
+                fs::write(&writer_path, b).unwrap();
+                fs::write(&writer_path, a).unwrap();
+            }
+        });
+        for _ in 0..100 {
+            if let Ok(bytes) = verified_pdf_bytes(&path, &digest) {
+                assert_eq!(bytes, a);
+            }
+        }
+        writer.join().unwrap();
+        let snapshot = verified_pdf_bytes(&path, &digest).unwrap();
+        fs::write(&path, b).unwrap();
+        // Native delivery writes this already-verified buffer, never reopens source.
+        assert_eq!(snapshot, a);
+        assert!(verified_pdf_bytes(&path, &digest).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(path.parent().unwrap()).unwrap();
     }
 }

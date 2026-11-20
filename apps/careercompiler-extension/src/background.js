@@ -1,4 +1,5 @@
-const PROTOCOL_VERSION = 1;
+import { canonicalDigest, HASH_VERSION, supportedApplicationUrl, trustedPopupSender } from "./authorizationContract.js";
+const PROTOCOL_VERSION = 3;
 const NATIVE_HOST = "com.mirathfan.careercompiler";
 const STORAGE_KEYS = {
   credential: "careercompilerCredential",
@@ -18,11 +19,13 @@ function validateResponse(response) {
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab.");
+  if (!supportedApplicationUrl(tab.url)) throw new Error("Unsupported application origin. Use a supported HTTPS ATS application page.");
   return tab;
 }
 
-async function sendToContent(type, payload = {}) {
+async function sendToContent(type, payload = {}, pinnedTab) {
   const tab = await activeTab();
+  if (pinnedTab && (tab.id !== pinnedTab.id || tab.url !== pinnedTab.url)) throw new Error("Application tab changed. Prepare fresh authorization.");
   return chrome.tabs.sendMessage(tab.id, { type, ...payload });
 }
 
@@ -121,7 +124,8 @@ async function pairExtension(pairingCode) {
 
 async function fillCurrentTab(forceUserEdits = false) {
   const tab = await activeTab();
-  const scan = await sendToContent("CC_SCAN_FORM");
+  const scan = await sendToContent("CC_SCAN_FORM", {}, tab);
+  if (scan?.pageContext?.url !== tab.url) return { ok: false, error: { code: "page_context_mismatch", message: "The page changed. Scan and prepare again.", retryable: true } };
   if (!scan?.ok) return { ok: false, error: { code: "scan_failed", message: "No supported application form detected.", retryable: true } };
 
   let prepared = lastPreparedByTab.get(tab.id);
@@ -137,20 +141,36 @@ async function fillCurrentTab(forceUserEdits = false) {
     lastPreparedByTab.set(tab.id, prepared);
   }
 
-  const fill = await sendToContent("CC_FILL_FORM", {
+  if (!prepared.authorization || prepared.authorization.hashVersion !== HASH_VERSION || prepared.authorization.expiresAtMs <= Date.now()) {
+    lastPreparedByTab.delete(tab.id);
+    return { ok: false, error: { code: "payload_expired", message: "Prepare a fresh application payload.", retryable: true } };
+  }
+  const { authorization: _token, ...content } = prepared;
+  if (await canonicalDigest(content) !== prepared.authorization.payloadHash) return { ok: false, error: { code: "payload_hash_mismatch", message: "Payload changed. Prepare fresh authorization.", retryable: true } };
+  const authorization = await authenticatedNativeRequest({ type: "authorize_fill", requestId: createRequestId("authorize-fill"), prepared, pageUrl: scan.pageContext.url }, 8000);
+  if (!authorization.ok) { lastPreparedByTab.delete(tab.id); return authorization; }
+  // Token is single-use. Any user-edit retry must prepare and authorize anew.
+  lastPreparedByTab.delete(tab.id);
+  let fill;
+  try { fill = await sendToContent("CC_FILL_FORM", {
+    expectedPageUrl: tab.url,
     applicationId: prepared.applicationId,
+    authorization: prepared.authorization,
     answers: prepared.fields,
     forceUserEdits,
-  });
+  }, tab); } catch { return { ok: false, error: { code: "browser_interrupted", message: "Browser fill was interrupted; some fields may have changed. Review them and prepare fresh authorization before retrying.", retryable: true } }; }
+  if (!fill?.ok && !fill?.needsConfirmation) return fill ?? { ok: false, error: { code: "fill_failed", message: "Browser fill failed.", retryable: true } };
   if (fill?.needsConfirmation) {
     return { ok: true, needsConfirmation: true, editedCount: fill.editedCount, scan, prepared };
   }
   if (prepared.applicationId) {
-    await authenticatedNativeRequest({
+    const acknowledged = await authenticatedNativeRequest({
       type: "mark_filled",
+      fillAuthorizationId: prepared.authorization.id,
       requestId: createRequestId("filled"),
       applicationId: prepared.applicationId,
     }, 8000);
+    if (!acknowledged.ok) return { ok: false, error: { code: "fill_acknowledgement_failed", message: "Fields may be filled, but desktop completion was not confirmed. Review before retrying.", retryable: true }, fill };
   }
   return {
     ok: true,
@@ -178,7 +198,10 @@ async function saveEdits() {
   }, 15000);
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!trustedPopupSender(sender, chrome.runtime.id) || !message || typeof message !== "object" || typeof message.type !== "string") {
+    sendResponse({ ok: false, error: { code: "sender_denied", message: "Only the CareerCompiler popup may request browser actions.", retryable: false } }); return false;
+  }
   (async () => {
     if (message?.type === "CC_POPUP_STATUS") {
       sendResponse(await connectionStatus());
@@ -205,6 +228,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return;
     }
     sendResponse({ ok: false, error: { code: "unknown_message", message: "Unknown CareerCompiler extension message.", retryable: false } });
-  })();
+  })().catch(() => sendResponse({ ok: false, error: { code: "browser_operation_failed", message: "Browser operation failed. Review the page before retrying.", retryable: true } }));
   return true;
 });

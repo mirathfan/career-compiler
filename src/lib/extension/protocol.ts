@@ -5,7 +5,7 @@ import type {
   GeneratedApplicationAnswer,
 } from "../../types/domain";
 
-export const EXTENSION_PROTOCOL_VERSION = 1;
+export const EXTENSION_PROTOCOL_VERSION = 3;
 export const NATIVE_HOST_NAME = "com.mirathfan.careercompiler";
 
 export interface ExtensionResponse<T = unknown> {
@@ -50,6 +50,7 @@ export interface EditedApplicationField {
 }
 
 export interface ResumeFillPayload {
+  contentDigest?: string;
   authorizedFileReference: string;
   filename: string;
   mimeType: string;
@@ -69,6 +70,9 @@ export interface GeneratedApplicationFillInstruction extends GeneratedApplicatio
 }
 
 export interface PreparedApplication {
+  contentFingerprint?: { job: string; resume: string; pdf?: string };
+  resumePreparationStatus?: "prepared" | "failed" | "not_verified";
+  authorization?: { id: string; expiresAtMs: number; hashVersion: "cc-json-sha256-v1"; payloadHash: string };
   applicationId: string;
   jobId: string;
   companyName: string;
@@ -87,6 +91,8 @@ export interface PreparedApplication {
 }
 
 export type ExtensionRequest =
+  | { type: "authorize_fill"; protocolVersion: number; requestId: string; extensionId: string; credential: string; prepared: PreparedApplication; pageUrl: string }
+
   | {
       type: "ping";
       protocolVersion: number;
@@ -127,6 +133,7 @@ export type ExtensionRequest =
     }
   | {
       type: "mark_filled";
+      fillAuthorizationId?: string;
       protocolVersion: number;
       requestId: string;
       extensionId: string;

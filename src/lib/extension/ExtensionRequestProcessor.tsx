@@ -1,3 +1,4 @@
+import { isIsolatedRuntime } from "../acceptance/runtime";
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useRepositoryStatus } from "../database/repositoryContext";
@@ -19,7 +20,7 @@ export function ExtensionRequestProcessor() {
   const inFlight = useRef(false);
 
   useEffect(() => {
-    if (!ready || !repository || !isTauriRuntime()) return undefined;
+    if (isIsolatedRuntime() || !ready || !repository || !isTauriRuntime()) return undefined;
     let cancelled = false;
 
     const tick = async () => {
