@@ -1,22 +1,27 @@
+import { useJobMatchApproval } from "../../components/useJobMatchApproval";
+import { prepareBatchReview } from "../../lib/job-automation/batchReview";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, Plus, Radar, RefreshCcw, Trash2 } from "lucide-react";
+import { Activity, Plus, Radar, RefreshCcw, Sparkles, Trash2, XCircle } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, InlineError, LoadingState } from "../../components/States";
 import { Badge, PageSection, StatCard } from "../../components/ui";
 import { useRepository } from "../../lib/database/repositoryContext";
 import { adapterForSource } from "../../lib/job-automation/adapters";
+import { cancelPendingJobMatchBatch, runApprovedJobMatchBatch } from "../../lib/job-automation/aiBatch";
 import { runJobAutomation } from "../../lib/job-automation/runner";
 import { parseCsv } from "../../lib/utils";
 import type { JobSearchPreferences, JobSource, JobSourceType } from "../../types/domain";
 
 const supportedTypes: JobSourceType[] = ["greenhouse", "lever", "ashby"];
 
-export function JobRadarPage() {
+export function JobRadarPage({ embedded = false }: { embedded?: boolean } = {}) {
   const repository = useRepository();
+  const approval = useJobMatchApproval();
   const queryClient = useQueryClient();
   const [error, setError] = useState("");
   const [testMessage, setTestMessage] = useState("");
+  const [aiMessage, setAiMessage] = useState("");
   const [sourceDraft, setSourceDraft] = useState({ name: "", companyName: "", sourceType: "greenhouse" as JobSourceType, sourceIdentifier: "", careersUrl: "" });
   const sources = useQuery({ queryKey: ["job-sources"], queryFn: () => repository.listJobSources() });
   const preferences = useQuery({ queryKey: ["job-search-preferences"], queryFn: () => repository.getJobSearchPreferences() });
@@ -28,6 +33,21 @@ export function JobRadarPage() {
     mutationFn: () => runJobAutomation(repository),
     onSuccess: () => { setError(""); queryClient.invalidateQueries(); },
     onError: (caught) => setError(caught instanceof Error ? caught.message : String(caught)),
+  });
+  const runAiAnalysis = useMutation({
+    mutationFn: async () => {
+      const review = await prepareBatchReview(repository, { jobIds: (jobs.data ?? []).map((job) => job.id) });
+      const preview = review.preview;
+      const approved = await approval.request(review);
+      if (!approved) throw new Error("AI analysis cancelled before any request was sent.");
+      return runApprovedJobMatchBatch(repository, { jobIds: preview.jobIds, approved: true, reviewedJobs: review.jobs, trigger: "automation_approved" });
+    },
+    onSuccess: (result) => {
+      setError("");
+      setAiMessage(`${result.valid} valid AI match${result.valid === 1 ? "" : "es"}; ${result.repaired} repaired; ${result.failed} failed.`);
+      queryClient.invalidateQueries();
+    },
+    onError: (caught) => { setError(caught instanceof Error ? caught.message : String(caught)); queryClient.invalidateQueries(); },
   });
 
   if (sources.isLoading || preferences.isLoading || runs.isLoading || jobs.isLoading) return <LoadingState label="Loading Job Radar..." />;
@@ -52,8 +72,11 @@ export function JobRadarPage() {
   };
 
   return <div>
+    {approval.dialog}
+    {!embedded ? (
     <PageHeader eyebrow="Public ATS discovery" title="Job Radar" description="Check configured public career boards, normalize postings, and score them locally. The desktop schedule runs only while CareerCompiler is open." meta={<><Badge tone={prefs.automationEnabled ? "emerald" : "slate"}>automation {prefs.automationEnabled ? "enabled" : "paused"}</Badge><Badge tone="blue">manual submission only</Badge></>} />
-    <div className="page-body space-y-5">
+) : null}
+    <div className={embedded ? "workspace-content space-y-5" : "page-body space-y-5"}>
       {error ? <InlineError message={error} /> : null}
       <div className="grid gap-3 md:grid-cols-4">
         <StatCard label="Sources" value={sources.data?.length ?? 0} icon={Radar} />
@@ -83,6 +106,20 @@ export function JobRadarPage() {
           <label className="text-sm font-semibold text-slate-700 md:col-span-2">Required keywords<input className="field mt-1" defaultValue={prefs.requiredKeywords.join(", ")} onBlur={(event) => updateCsv("requiredKeywords", event.target.value)} /></label>
         </div>
         <div className="mt-4 flex gap-2"><button className="button button-primary" type="button" disabled={runSearch.isPending} onClick={() => runSearch.mutate()}><RefreshCcw size={15} />{runSearch.isPending ? "Searching…" : "Run Search Now"}</button>{latest ? <p className="self-center text-sm text-slate-600">{latest.summary.message}</p> : null}</div>
+      </PageSection>
+      <PageSection title="AI match analysis" description="Opt-in, evidence-bounded analysis for jobs that already passed deterministic filtering. Every batch shows its scope before any paid request; invalid output receives at most one repair.">
+        <div className="grid gap-3 md:grid-cols-4">
+          <label className="text-sm font-semibold text-slate-700">AI matching<select className="field mt-1" value={prefs.aiMatchEnabled ? "enabled" : "disabled"} onChange={(event) => savePreferences.mutate({ aiMatchEnabled: event.target.value === "enabled" })}><option value="disabled">Disabled</option><option value="enabled">Enabled (opt-in)</option></select></label>
+          <label className="text-sm font-semibold text-slate-700">Approval<select className="field mt-1" value={prefs.aiMatchRequireApproval ? "required" : "optional"} onChange={(event) => savePreferences.mutate({ aiMatchRequireApproval: event.target.value === "required" })}><option value="required">Required before every batch</option><option value="optional">UI confirmation only</option></select></label>
+          <label className="text-sm font-semibold text-slate-700">Minimum deterministic score<input className="field mt-1" type="number" min={0} max={100} value={prefs.aiMatchMinimumDeterministicScore} onChange={(event) => savePreferences.mutate({ aiMatchMinimumDeterministicScore: Number(event.target.value) })} /></label>
+          <label className="text-sm font-semibold text-slate-700">AI model override<input className="field mt-1" placeholder="Use Settings model" value={prefs.aiMatchModel} onChange={(event) => savePreferences.mutate({ aiMatchModel: event.target.value })} /></label>
+          <label className="text-sm font-semibold text-slate-700">AI requests/run<input className="field mt-1" type="number" min={1} max={100} value={prefs.maximumAiAnalysesPerRun} onChange={(event) => savePreferences.mutate({ maximumAiAnalysesPerRun: Number(event.target.value) })} /></label>
+          <label className="text-sm font-semibold text-slate-700">AI requests/day<input className="field mt-1" type="number" min={1} max={500} value={prefs.maximumAiAnalysesPerDay} onChange={(event) => savePreferences.mutate({ maximumAiAnalysesPerDay: Number(event.target.value) })} /></label>
+          <label className="text-sm font-semibold text-slate-700">Deterministic weight<input className="field mt-1" type="number" min={0} max={1} step={0.05} value={prefs.deterministicScoreWeight} onChange={(event) => savePreferences.mutate({ deterministicScoreWeight: Number(event.target.value), aiScoreWeight: 1 - Number(event.target.value) })} /></label>
+          <label className="flex items-center gap-2 self-end pb-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={prefs.aiMatchMockMode} onChange={(event) => savePreferences.mutate({ aiMatchMockMode: event.target.checked })} />Use free deterministic mock provider</label>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2"><button className="button button-primary" type="button" disabled={!prefs.aiMatchEnabled || runAiAnalysis.isPending} onClick={() => runAiAnalysis.mutate()}><Sparkles size={15} />{runAiAnalysis.isPending ? "Analyzing…" : "Analyze Qualified Jobs"}</button>{runAiAnalysis.isPending ? <button className="button" type="button" onClick={() => cancelPendingJobMatchBatch()}><XCircle size={15} />Cancel pending batch</button> : null}{aiMessage ? <p className="text-sm font-semibold text-emerald-700">{aiMessage}</p> : null}</div>
+        <p className="mt-3 text-xs text-slate-500">Automatic resume generation remains disabled in this milestone. Resume creation and application-package approval stay manual.</p>
       </PageSection>
       <PageSection title="Add public job source" description="Use the public board token/site name only. CareerCompiler does not scrape authenticated pages or generic sites.">
         <div className="grid gap-3 lg:grid-cols-5">

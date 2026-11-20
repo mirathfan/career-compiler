@@ -1,0 +1,32 @@
+import { fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, expect, it } from "vitest";
+import { RepositoryContext } from "../../lib/database/repositoryContext";
+import { MemoryRepository } from "../../lib/database/memoryRepository";
+import type { JobMatch } from "../../types/domain";
+import { MatchInboxPage } from "./MatchInboxPage";
+
+afterEach(cleanup);
+it("refreshes persisted recovery state after rejecting stale review, without dispatch", async () => {
+  HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+  HTMLDialogElement.prototype.close = function () { this.open = false; };
+  const repository = new MemoryRepository(); await repository.initialize();
+  await repository.saveJobSearchPreferences({ aiMatchEnabled: true, aiMatchMockMode: true, aiMatchMinimumDeterministicScore: 0 });
+  await repository.saveCareerItem({ id: "parent", title: "Synthetic project", type: "project" });
+  const fact = await repository.saveCareerFact({ id: "reviewed-fact", careerItemId: "parent", statement: "Built TypeScript software", skillTags: ["TypeScript"], evidenceStatus: "verified" });
+  await repository.saveJob({ id: "job", company: "Synthetic", roleTitle: "Software Engineer", rawDescription: "TypeScript software", descriptionText: "TypeScript software", status: "matched" });
+  await repository.saveJobMatch({ jobId: "job", deterministicScore: 80, aiScore: 90, combinedScore: 83, analysisJson: { schemaVersion: "careercompiler-job-match-audit-v1", state: "running", attemptId: "interrupted", createdAt: new Date().toISOString() } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><RepositoryContext.Provider value={{ repository, ready: true, error: null }}><MemoryRouter><MatchInboxPage /></MemoryRouter></RepositoryContext.Provider></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Reanalyze AI" }));
+  await screen.findByText("reviewed-fact");
+  await repository.saveCareerFact({ ...fact, enabled: false });
+  fireEvent.click(screen.getByRole("button", { name: "Approve mock analysis" }));
+  await screen.findByText(/analysis_review_stale/);
+  await screen.findByText("AI: failed");
+  await waitFor(() => expect(client.getQueryData<JobMatch[]>(["job-matches"])?.[0].aiScore).toBeNull());
+  expect(await repository.listSafetyRecords("ai_budget")).toHaveLength(0);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  client.clear();
+});

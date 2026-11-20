@@ -1,5 +1,6 @@
 import type { Job, JobMatch, JobSearchPreferences } from "../../types/domain";
 import { detectSeniority, extractExperienceRequirement, normalizeTitle } from "./normalize";
+import { containsSensitiveData } from "./evidencePacket";
 import type { CareerMatchContext } from "./types";
 
 const SKILL_ALIASES: Record<string, string[]> = {
@@ -72,9 +73,11 @@ export function scoreJob(job: Job, preferences: JobSearchPreferences, career: Ca
     : workplaceMatch ? 10 : 4;
   const locationCompatibility = locationScore >= 8 ? "strong" : locationScore >= 4 ? "moderate" : "incompatible";
 
-  const enabledFacts = career.careerFacts.filter((fact) => fact.enabled && fact.evidenceStatus !== "prohibited");
+  const eligibleParents = career.careerItems.filter((item) => item.enabled && !containsSensitiveData([item.title, item.organization, item.shortDescription].join(" ")));
+  const parentIds = new Set(eligibleParents.map((item) => item.id));
+  const enabledFacts = career.careerFacts.filter((fact) => parentIds.has(fact.careerItemId) && fact.enabled && ["verified", "user_provided"].includes(fact.evidenceStatus) && !containsSensitiveData(fact.statement));
   const matchedFacts = enabledFacts.filter((fact) => [...fact.skillTags, ...fact.roleTags].some((tag) => containsTerm(text, tag)));
-  const itemById = new Map(career.careerItems.map((item) => [item.id, item]));
+  const itemById = new Map(eligibleParents.map((item) => [item.id, item]));
   const projectIds = [...new Set(matchedFacts.map((fact) => itemById.get(fact.careerItemId)).filter((item) => item?.type === "project").map((item) => item?.id as string))];
   const projectScore = clamp(projectIds.length * 3 + Math.min(matchedFacts.length, 4), 10);
 

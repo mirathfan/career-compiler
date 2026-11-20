@@ -1,3 +1,4 @@
+import { jobFingerprint } from "./safety";
 import type { Job } from "../../types/domain";
 import type { NormalizedJob } from "./types";
 
@@ -59,18 +60,6 @@ export function findDuplicate(incoming: NormalizedJob, existingJobs: Job[]): Dup
   return { duplicate: false, canonicalJobId: "", reason: null, confidence: 0 };
 }
 
-const materialFields: Array<keyof NormalizedJob> = [
-  "roleTitle",
-  "descriptionText",
-  "location",
-  "workplaceType",
-  "employmentType",
-  "department",
-  "salaryMin",
-  "salaryMax",
-  "applicationUrl",
-];
-
 export function hasMaterialJobChange(existing: Job, incoming: NormalizedJob) {
-  return materialFields.some((field) => existing[field] !== incoming[field]);
+  return jobFingerprint(existing) !== jobFingerprint(incoming);
 }

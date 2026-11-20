@@ -1,3 +1,5 @@
+import type { WorkspaceRequest, WorkspaceResponse } from "../copilot/workspaceContract";
+import type { JobAnswer, JobConversationRequest } from "../copilot/modelContract";
 import type {
   AIProviderMode,
   AIProviderResult,
@@ -12,6 +14,9 @@ import type {
   ValidationIssue,
 } from "../../types/domain";
 import type { ResumeReviewAdvisory } from "../../schemas/resumeReview";
+import type { JobMatchAnalysis } from "../../schemas/jobMatchAnalysis";
+import type { AnalyzeJobMatchInput, RepairJobMatchInput } from "../job-automation/aiTypes";
+export type { AnalyzeJobMatchInput, RepairJobMatchInput } from "../job-automation/aiTypes";
 
 export interface AnalyzeJobInput {
   company: string;
@@ -56,7 +61,11 @@ export interface ReviewResumeInput {
 
 export interface AIProvider {
   readonly mode: AIProviderMode;
+  converseWorkspace?(input: { request: WorkspaceRequest; modelName: string }): Promise<AIProviderResult<WorkspaceResponse>>;
+  converseJob?(input: { request: JobConversationRequest; modelName: string }): Promise<AIProviderResult<JobAnswer>>;
   analyzeJob(input: AnalyzeJobInput): Promise<AIProviderResult<JobAnalysis>>;
+  analyzeJobMatch(input: AnalyzeJobMatchInput): Promise<AIProviderResult<JobMatchAnalysis>>;
+  repairJobMatch(input: RepairJobMatchInput): Promise<AIProviderResult<JobMatchAnalysis>>;
   planResume(input: PlanResumeInput): Promise<AIProviderResult<ResumePlan>>;
   generateResume(input: GenerateResumeInput): Promise<AIProviderResult<TailoredResume>>;
   repairResume(input: RepairResumeInput): Promise<AIProviderResult<TailoredResume>>;

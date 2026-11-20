@@ -76,7 +76,7 @@ fn build_request_body(request: &StructuredOpenAIRequest) -> Value {
             }),
         );
     }
-    json!({
+    let mut body = json!({
         "model": request.model,
         "input": [
             { "role": "system", "content": request.instructions },
@@ -91,7 +91,17 @@ fn build_request_body(request: &StructuredOpenAIRequest) -> Value {
             }
         },
         "metadata": { "request_type": request.request_type }
-    })
+    });
+    if request.request_type == "career_copilot" {
+        body["store"] = json!(false);
+        if matches!(
+            request.schema_name.as_str(),
+            "career_workspace_plan_v1" | "career_workspace_quotes_v1"
+        ) {
+            body["max_output_tokens"] = json!(1200);
+        }
+    }
+    body
 }
 
 fn parse_structured_response(
@@ -123,7 +133,15 @@ fn parse_structured_response(
     })
 }
 
+fn requires_live_budget(request_type: &str) -> bool {
+    matches!(
+        request_type,
+        "job_match_analysis" | "job_match_repair" | "career_copilot"
+    )
+}
+
 async fn execute_structured_openai(
+    app: &tauri::AppHandle,
     request: StructuredOpenAIRequest,
 ) -> Result<StructuredOpenAIResponse, String> {
     if let Some(pdf_data_url) = request.pdf_data_url.as_ref() {
@@ -137,16 +155,27 @@ async fn execute_structured_openai(
         }
     }
     let key = resolve_openai_key(&KeyringSecretStore)?;
+    if requires_live_budget(&request.request_type) {
+        crate::transactions::mark_live_attempt(
+            app,
+            &request.input,
+            request.request_type == "job_match_repair",
+        )
+        .await?;
+    }
     let started = Instant::now();
-    let response = reqwest::Client::new()
+    let pending = reqwest::Client::new()
         .post("https://api.openai.com/v1/responses")
         .bearer_auth(key)
-        .json(&build_request_body(&request))
-        .send()
-        .await
-        .map_err(|_| {
-            "network_failure|Could not reach OpenAI. Check the network and retry.".to_string()
-        })?;
+        .json(&build_request_body(&request));
+    let pending = if request.request_type == "career_copilot" {
+        pending.timeout(std::time::Duration::from_secs(60))
+    } else {
+        pending
+    };
+    let response = pending.send().await.map_err(|_| {
+        "network_failure|Could not reach OpenAI. Check the network and retry.".to_string()
+    })?;
     let status = response.status();
     let body = response.text().await.map_err(|_| {
         "network_failure|Could not read the OpenAI response. Retry the request.".to_string()
@@ -160,14 +189,18 @@ async fn execute_structured_openai(
 
 #[tauri::command]
 pub async fn run_openai_structured(
+    app: tauri::AppHandle,
     request: StructuredOpenAIRequest,
 ) -> Result<StructuredOpenAIResponse, String> {
-    execute_structured_openai(request).await
+    execute_structured_openai(&app, request).await
 }
 
 #[tauri::command]
-pub async fn analyze_job_with_openai(request: AnalyzeJobRequest) -> Result<String, String> {
-    let response = execute_structured_openai(StructuredOpenAIRequest {
+pub async fn analyze_job_with_openai(
+    app: tauri::AppHandle,
+    request: AnalyzeJobRequest,
+) -> Result<String, String> {
+    let response = execute_structured_openai(&app, StructuredOpenAIRequest {
         model: request.model,
         request_type: "job_analysis".to_string(),
         instructions: "Analyze the job description for an evidence-grounded resume compiler. Return only the required structured response.".to_string(),
@@ -264,6 +297,22 @@ mod tests {
     }
 
     #[test]
+    fn copilot_route_requires_budget_and_disables_response_storage() {
+        assert!(requires_live_budget("career_copilot"));
+        assert!(requires_live_budget("job_match_analysis"));
+        assert!(requires_live_budget("job_match_repair"));
+        assert!(!requires_live_budget("resume_generation"));
+        let mut request = request();
+        request.request_type = "career_copilot".into();
+        request.input = json!({"job":{"id":"synthetic-job"},"question":"What role?"});
+        let body = build_request_body(&request);
+        assert_eq!(body["store"], false);
+        assert_eq!(body["metadata"]["request_type"], "career_copilot");
+        assert_eq!(body["text"]["format"]["strict"], true);
+        assert!(!body.to_string().contains("private_notes"));
+    }
+
+    #[test]
     fn serializes_strict_structured_request_without_a_secret() {
         let body = build_request_body(&request());
         assert_eq!(body["model"], "configured-model");
@@ -296,6 +345,19 @@ mod tests {
         assert_eq!(parsed.output_text, "{\"id\":\"resume\"}");
         assert_eq!(parsed.input_tokens, Some(12));
         assert_eq!(parsed.total_tokens, Some(20));
+    }
+
+    #[test]
+    fn workspace_reads_keep_store_disabled_and_bound_output_tokens() {
+        let mut request = request();
+        request.request_type = "career_copilot".into();
+        for schema in ["career_workspace_plan_v1", "career_workspace_quotes_v1"] {
+            request.schema_name = schema.into();
+            let body = build_request_body(&request);
+            assert_eq!(body["store"], false);
+            assert_eq!(body["max_output_tokens"], 1200);
+            assert!(requires_live_budget(&request.request_type));
+        }
     }
 
     #[test]

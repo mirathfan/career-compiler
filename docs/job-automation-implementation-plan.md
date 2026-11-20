@@ -58,3 +58,25 @@ The migration is exercised against both a fresh database and an upgraded databas
 - Automated resume generation can spend money or overproduce. Default mode is manual, paid analysis/preparation requires explicit opt-in, and per-run caps are enforced.
 - Desktop scheduling cannot run while the app is closed. The UI states this and the scheduler runs once on launch only when overdue; the collector/orchestrator is UI-independent for future cloud reuse.
 - The full milestone spans discovery, AI, PDF generation, and browser integration. Work is delivered in stable vertical slices; unimplemented portions are documented as limitations rather than represented as complete.
+
+## Milestone 2: opt-in structured AI matching
+
+This milestone layers AI explanation onto the deterministic baseline without changing collection, resume rendering, application tracking, or extension submission boundaries.
+
+- Build a bounded evidence packet from enabled, resume-permitted Career Memory records. Only relevant skills, career items, verified/user-provided facts, metric tokens, and known resume-profile IDs are included; contact data, private notes, prohibited/needs-review facts, and answer-vault values are excluded.
+- Extend the existing `AIProvider` and Responses API structured-call path with versioned job-match analysis and repair operations. The mock provider implements the same interface and deterministic failure scenarios.
+- Validate schema, every referenced ID, resume-profile selection, qualification separation, numeric claims, hard-reject reasoning, and sponsorship claims locally. Invalid output never contributes an AI score.
+- Permit exactly one repair request for a structurally valid response that fails local semantic validation. A failed repair leaves the deterministic score active.
+- Store a complete audit envelope in `job_match_analysis_history.analysis_json`, including trigger, outputs, issues, repair state, usage metadata, evidence IDs, duration, and error code. `job_matches` contains only the current accepted result or a deterministic-only failed/stale state.
+- Add explicit approval, live/mock selection, minimum deterministic score, per-batch and daily caps, and configurable deterministic/AI weights to the existing JSON-backed job-search preferences. Defaults keep AI disabled and approval required.
+- Material job changes archive the prior result, mark the active AI state stale, clear AI influence, and require reanalysis. Unchanged jobs are not analyzed repeatedly unless the user explicitly requests reanalysis.
+- Extend Match Inbox and Job Radar with transparent deterministic, AI, and combined scores plus manual single/selected/qualified analysis actions and immutable history inspection.
+- Automatic resume preparation remains disabled in this milestone unless the complete existing tailoring, validation, XeLaTeX, one-page, ATS extraction, cap, and retry-isolation path can be invoked end to end. No partial generator will be presented as automatic preparation.
+
+### Delivered scope and deferred policy
+
+The stable vertical slice delivers the bounded packet, existing-provider integration, local validation, one semantic repair, immutable history, explicit approvals, run/day caps, combined scoring, stale handling, mock fixtures, Match Inbox controls, Job Radar controls, and run-summary AI counters. Migration 9 already provides the required tables and JSON preference storage, so no schema migration is added.
+
+Threshold resume policy fields are normalized with safe defaults (`manual`, score 80, three per run, five per day, valid AI required, package approval required), but the automation runner does not execute them. Completing that feature requires a durable tailoring queue plus isolated XeLaTeX/PDF/ATS failure recording and retry fingerprints; it is deferred rather than partially routing around the established resume pipeline. Application Queue and extension behavior therefore remain unchanged and final submission remains manual.
+
+Mock-only tests cover packet boundaries, allow-list failures, unsupported numbers, qualification classification, sponsorship uncertainty, first-attempt success, successful single repair, permanent repair failure, approval, caps, unchanged skipping, history, deterministic fallback, and stale material changes. Live OpenAI calls are excluded from automated tests.

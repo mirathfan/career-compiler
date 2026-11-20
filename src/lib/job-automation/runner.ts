@@ -49,18 +49,22 @@ function runningRun(id: string, startedAt: string): JobAutomationRun {
   return {
     id, startedAt, completedAt: "", status: "running", sourcesChecked: 0, jobsFetched: 0,
     jobsAdded: 0, jobsUpdated: 0, jobsDeduplicated: 0, jobsFiltered: 0, jobsAnalyzed: 0,
-    resumesGenerated: 0, errors: [], summary: { message: "Job search is running.", highMatchJobIds: [], sourceFailureCount: 0 },
+    resumesGenerated: 0, errors: [], summary: { message: "Job search is running.", highMatchJobIds: [], sourceFailureCount: 0,
+      aiMetrics: { eligible: 0, approvalsRequested: 0, started: 0, valid: 0, repaired: 0, failed: 0,
+        skippedCap: 0, skippedUnchanged: 0, resumeQueued: 0, resumeCompleted: 0, resumeFailed: 0,
+        resumeSkippedCap: 0, packagesAwaitingApproval: 0 } },
   };
 }
 
 export async function runJobAutomation(repository: AppRepository, options: RunJobAutomationOptions = {}) {
-  const active = (await repository.listJobAutomationRuns()).find((run) => run.status === "running");
-  if (active) throw new Error("automation_run_active|A job search run is already in progress.");
-
   const clock = options.now ?? (() => new Date());
   const startedAt = clock().toISOString();
   let run = runningRun(createId("job-run"), startedAt);
-  await repository.saveJobAutomationRun(run);
+  await repository.transaction(async (transaction) => {
+    const active = (await transaction.listJobAutomationRuns()).find((run) => run.status === "running");
+    if (active) throw new Error("automation_run_active|A job search run is already in progress.");
+    await transaction.saveJobAutomationRun(run);
+  });
   const preferences = await repository.getJobSearchPreferences();
   const career = {
     careerItems: await repository.listCareerItems(),
@@ -92,14 +96,6 @@ export async function runJobAutomation(repository: AppRepository, options: RunJo
             const materiallyChanged = hasMaterialJobChange(existing, incoming);
             const priorMatch = await repository.getJobMatch(existing.id);
             requiresEvaluation = materiallyChanged || !priorMatch;
-            if (materiallyChanged) {
-              if (priorMatch) await repository.saveJobMatchHistory({
-                id: createId("job-match-history"), jobId: existing.id, contentHash: existing.contentHash,
-                deterministicScore: priorMatch.deterministicScore, aiScore: priorMatch.aiScore,
-                combinedScore: priorMatch.combinedScore, analysisJson: priorMatch.analysisJson,
-                createdAt: nowIso(),
-              });
-            }
             saved = await repository.saveJob({
               ...incoming,
               id: existing.id,

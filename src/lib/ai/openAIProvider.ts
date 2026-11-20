@@ -1,9 +1,18 @@
+import { workspaceResumeAnswerSchema } from "../copilot/workspaceContract";
+import { RESUME_BULLET_INSTRUCTIONS } from "../copilot/resumeBulletContract";
+import { z } from "zod";
+import { PROFILE_SKILL_INSTRUCTIONS } from "../copilot/profileSkillContract";
+import { SynthesisAnswer, synthesisJsonSchema, SYNTHESIS_INSTRUCTIONS } from "../copilot/workspaceSynthesis";
+import { ReadPlan } from "../copilot/workspaceReads";
+import { workspaceSkillAnswerSchema, WorkspaceRequestSchema, WorkspaceAnswer, WORKSPACE_INSTRUCTIONS, workspacePlanJsonSchema, workspaceAnswerJsonSchema, type WorkspaceRequest, type WorkspaceResponse } from "../copilot/workspaceContract";
+import { JobAnswerSchema, jobAnswerJsonSchema, JOB_CONVERSATION_INSTRUCTIONS, type JobConversationRequest } from "../copilot/modelContract";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CareerImportProposal as CareerImportProposalSchema,
   careerImportProposalJsonSchema,
 } from "../../schemas/careerImport";
 import { JobAnalysisSchema, jobAnalysisJsonSchema } from "../../schemas/jobAnalysis";
+import { JobMatchAnalysisSchema, jobMatchAnalysisJsonSchema } from "../../schemas/jobMatchAnalysis";
 import { ResumeReviewAdvisorySchema, resumeReviewAdvisoryJsonSchema } from "../../schemas/resumeReview";
 import {
   ResumePlanSchema,
@@ -20,6 +29,8 @@ import type {
 } from "../../types/domain";
 import {
   JOB_ANALYSIS_PROMPT,
+  JOB_MATCH_ANALYSIS_PROMPT,
+  JOB_MATCH_REPAIR_PROMPT,
   BULLET_SHORTEN_PROMPT,
   CAREER_INTAKE_PROMPT,
   PROMPT_VERSIONS,
@@ -32,10 +43,12 @@ import {
   AIProviderError,
   type AIProvider,
   type AnalyzeJobInput,
+  type AnalyzeJobMatchInput,
   type ExtractCareerInformationInput,
   type GenerateResumeInput,
   type PlanResumeInput,
   type RepairResumeInput,
+  type RepairJobMatchInput,
   type ReviewResumeInput,
   type ShortenBulletInput,
 } from "./provider";
@@ -127,6 +140,23 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
+  async converseWorkspace(input: { request: WorkspaceRequest; modelName: string }): Promise<AIProviderResult<WorkspaceResponse>> {
+    const request = WorkspaceRequestSchema.parse(input.request);
+    const planning = request.phase === "plan";
+    if (request.allowResumeBulletProposal && request.allowProfileSkillProposal) throw new Error("Choose only one proposed action per request.");
+    const skillSchema = request.allowResumeBulletProposal ? workspaceResumeAnswerSchema(request.responseStyle === "synthesis") : request.allowProfileSkillProposal ? workspaceSkillAnswerSchema(request.responseStyle === "synthesis") : null;
+    const result = await this.callStructured({ model: input.modelName, requestType: "career_copilot", instructions: WORKSPACE_INSTRUCTIONS + (request.responseStyle === "synthesis" ? "\n" + SYNTHESIS_INSTRUCTIONS : "") + (request.allowResumeBulletProposal ? "\n" + RESUME_BULLET_INSTRUCTIONS : skillSchema ? "\n" + PROFILE_SKILL_INSTRUCTIONS : ""),
+      input: request, schemaName: planning ? "career_workspace_plan_v1" : "career_workspace_quotes_v1",
+      schema: planning ? workspacePlanJsonSchema : skillSchema ? z.toJSONSchema(skillSchema) : request.responseStyle === "synthesis" ? synthesisJsonSchema : workspaceAnswerJsonSchema,
+      parse: (value): WorkspaceResponse => planning ? { phase: "plan", plan: ReadPlan.parse(value) } : skillSchema ? { phase: "answer", ...skillSchema.parse(value) } : { phase: "answer", answer: request.responseStyle === "synthesis" ? SynthesisAnswer.parse(value) : WorkspaceAnswer.parse(value) } });
+    return result;
+  }
+
+  converseJob(input: { request: JobConversationRequest; modelName: string }) {
+    return this.callStructured({ model: input.modelName, requestType: "career_copilot", instructions: JOB_CONVERSATION_INSTRUCTIONS,
+      input: input.request, schemaName: "career_copilot_job_quotes_v1", schema: jobAnswerJsonSchema, parse: value => JobAnswerSchema.parse(value) });
+  }
+
   analyzeJob(input: AnalyzeJobInput) {
     return this.callStructured({
       model: input.modelName,
@@ -141,6 +171,35 @@ export class OpenAIProvider implements AIProvider {
       schemaName: "job_analysis",
       schema: jobAnalysisJsonSchema,
       parse: (value) => JobAnalysisSchema.parse(value),
+    });
+  }
+
+  analyzeJobMatch(input: AnalyzeJobMatchInput) {
+    return this.callStructured({
+      model: input.modelName,
+      requestType: "job_match_analysis",
+      instructions: JOB_MATCH_ANALYSIS_PROMPT,
+      input: input.request,
+      schemaName: "job_match_analysis_v2",
+      schema: jobMatchAnalysisJsonSchema,
+      parse: (value) => JobMatchAnalysisSchema.parse(value),
+    });
+  }
+
+  repairJobMatch(input: RepairJobMatchInput) {
+    return this.callStructured({
+      model: input.modelName,
+      requestType: "job_match_repair",
+      instructions: JOB_MATCH_REPAIR_PROMPT,
+      input: {
+        ...input.request,
+        promptVersion: PROMPT_VERSIONS.jobMatchRepair,
+        invalidResult: input.invalidResult,
+        validationIssues: input.validationIssues,
+      },
+      schemaName: "job_match_analysis_repair_v2",
+      schema: jobMatchAnalysisJsonSchema,
+      parse: (value) => JobMatchAnalysisSchema.parse(value),
     });
   }
 

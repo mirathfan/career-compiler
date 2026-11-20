@@ -22,6 +22,16 @@ const fact: CareerFact = { id: "fact-1", careerItemId: project.id, statement: "B
 const skills: Skill[] = [{ id: "skill-react", name: "React", category: "Framework", proficiencyNote: "", enabled: true }, { id: "skill-ts", name: "TypeScript", category: "Language", proficiencyNote: "", enabled: true }];
 
 describe("job automation deterministic logic", () => {
+  it("excludes disabled parents, sensitive facts and unreviewed evidence from deterministic matches", () => {
+    const disabled = { ...project, id: "disabled", enabled: false };
+    const result = scoreJob(job(), preferences(), { careerItems: [project, disabled], skills, careerFacts: [fact,
+      { ...fact, id: "disabled-child", careerItemId: disabled.id },
+      { ...fact, id: "sensitive", statement: "Contact synthetic@example.invalid for React" },
+      { ...fact, id: "unreviewed", evidenceStatus: "needs_review" },
+    ] }, new Date(timestamp));
+    expect(result.matchedFactIds).toEqual([fact.id]);
+    expect(result.matchedProjectIds).toEqual([project.id]);
+  });
   it("normalizes text and produces stable content hashes", () => {
     expect(htmlToText("<p>Hello &amp; welcome</p><script>bad()</script><ul><li>One</li></ul>")).toBe("Hello & welcome\nOne");
     expect(normalizeTitle("Senior—Software Engineer")).toBe("senior software engineer");
@@ -60,10 +70,14 @@ describe("job automation deterministic logic", () => {
     expect(result.matchedSkillIds).toEqual(["skill-react", "skill-ts"]);
     expect(result.matchedFactIds).toEqual(["fact-1"]);
     expect(combineScores(80, 90)).toBe(83);
+    expect(combineScores(80, null)).toBe(80);
+    expect(combineScores(80, 100, 0.5)).toBe(90);
+    expect(combineScores(0, 100, 0.7)).toBe(30);
+    expect(combineScores(101, 100, 1)).toBe(100);
   });
 
   it("validates structured AI output against supplied evidence IDs", () => {
-    const analysis = JobMatchAnalysisSchema.parse({ score: 80, hardReject: false, hardRejectReasons: [], recommendedResumeProfile: "ai-engineer", matchedEvidenceIds: ["fact-1"], matchedSkillIds: ["skill-react"], matchedProjectIds: ["project-1"], matchedExperienceIds: [], missingRequirements: [], strengths: [], concerns: [], experienceCompatibility: "strong", locationCompatibility: "moderate", sponsorshipStatus: "not_mentioned", summary: "Grounded match." });
+    const analysis = JobMatchAnalysisSchema.parse({ score: 80, hardReject: false, hardRejectReasons: [], recommendedResumeProfile: "ai-engineer", matchedEvidenceIds: ["fact-1"], matchedSkillIds: ["skill-react"], matchedProjectIds: ["project-1"], matchedExperienceIds: [], requiredQualifications: ["React"], preferredQualifications: ["Product experience"], missingRequirements: [], strengths: [], concerns: [], experienceCompatibility: "strong", locationCompatibility: "moderate", sponsorshipStatus: "not_mentioned", summary: "Grounded match." });
     expect(validateJobMatchEvidence(analysis, { evidenceIds: ["fact-1"], skillIds: ["skill-react"], projectIds: ["project-1"], experienceIds: [] }).valid).toBe(true);
     expect(validateJobMatchEvidence({ ...analysis, matchedEvidenceIds: ["invented"] }, { evidenceIds: ["fact-1"], skillIds: ["skill-react"], projectIds: ["project-1"], experienceIds: [] }).valid).toBe(false);
   });

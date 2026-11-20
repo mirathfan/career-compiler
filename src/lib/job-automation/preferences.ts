@@ -5,6 +5,10 @@ export function defaultJobSearchPreferences(existing?: Partial<JobSearchPreferen
   const now = nowIso();
   const bounded = (value: number | undefined, fallback: number, minimum: number, maximum: number) =>
     Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, Math.round(value as number))) : fallback;
+  const rawDeterministicWeight = Number.isFinite(existing?.deterministicScoreWeight) ? Math.min(1, Math.max(0, existing?.deterministicScoreWeight as number)) : 0.7;
+  const rawAiWeight = Number.isFinite(existing?.aiScoreWeight) ? Math.min(1, Math.max(0, existing?.aiScoreWeight as number)) : 0.3;
+  const weightTotal = rawDeterministicWeight + rawAiWeight;
+  const deterministicScoreWeight = weightTotal > 0 ? rawDeterministicWeight / weightTotal : 0.7;
   return {
     id: existing?.id ?? "job-search-preferences-default",
     automationEnabled: existing?.automationEnabled ?? false,
@@ -29,8 +33,20 @@ export function defaultJobSearchPreferences(existing?: Partial<JobSearchPreferen
     maximumResumesGeneratedPerRun: bounded(existing?.maximumResumesGeneratedPerRun, 3, 0, 25),
     pollingIntervalHours: bounded(existing?.pollingIntervalHours, 24, 1, 720),
     resumeGenerationMode: existing?.resumeGenerationMode ?? "manual",
-    resumeGenerationThreshold: bounded(existing?.resumeGenerationThreshold, 85, 0, 100),
+    resumeGenerationThreshold: bounded(existing?.resumeGenerationThreshold, 80, 0, 100),
     requireApprovalBeforeAi: existing?.requireApprovalBeforeAi ?? true,
+    aiMatchEnabled: existing?.aiMatchEnabled ?? false,
+    aiMatchRequireApproval: existing?.aiMatchRequireApproval ?? existing?.requireApprovalBeforeAi ?? true,
+    aiMatchMinimumDeterministicScore: bounded(existing?.aiMatchMinimumDeterministicScore, 65, 0, 100),
+    maximumAiAnalysesPerRun: bounded(existing?.maximumAiAnalysesPerRun, 10, 1, 100),
+    maximumAiAnalysesPerDay: bounded(existing?.maximumAiAnalysesPerDay, 20, 1, 500),
+    aiMatchModel: existing?.aiMatchModel ?? "",
+    aiMatchMockMode: existing?.aiMatchMockMode ?? false,
+    deterministicScoreWeight,
+    aiScoreWeight: 1 - deterministicScoreWeight,
+    maximumResumesPerDay: bounded(existing?.maximumResumesPerDay, 5, 0, 50),
+    resumeRequiresAiAnalysis: existing?.resumeRequiresAiAnalysis ?? true,
+    requirePackageApproval: existing?.requirePackageApproval ?? true,
     createdAt: existing?.createdAt ?? now,
     updatedAt: existing?.updatedAt ?? now,
   };

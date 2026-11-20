@@ -1,3 +1,4 @@
+import { isIsolatedRuntime } from "../acceptance/runtime";
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRepositoryStatus } from "../database/repositoryContext";
@@ -9,7 +10,7 @@ export function JobAutomationLaunchScheduler() {
   const queryClient = useQueryClient();
   const checked = useRef(false);
   useEffect(() => {
-    if (checked.current || !repository) return;
+    if (isIsolatedRuntime() || checked.current || !repository) return;
     checked.current = true;
     void Promise.all([
       repository.getJobSearchPreferences(),
