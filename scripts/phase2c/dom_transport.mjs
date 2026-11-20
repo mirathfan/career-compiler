@@ -1,0 +1,22 @@
+// Real packaged IPC + jsdom DOM only. Not Chrome installed-extension acceptance.
+import { JSDOM } from 'jsdom';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+const root=process.argv[2];const html=readFileSync('apps/careercompiler-extension/fixtures/isolated/multi-step.html','utf8');
+const dom=new JSDOM(html,{url:'http://127.0.0.1:5297/multi-step.html',runScripts:'outside-only'});const w=dom.window;
+Object.defineProperty(w.HTMLElement.prototype,'getBoundingClientRect',{value:()=>({width:120,height:24,top:0,left:0,right:120,bottom:24})});
+w.CSS={escape:value=>String(value).replace(/"/g,'\\"')};let listener;w.chrome={runtime:{id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",onMessage:{addListener:value=>listener=value}}};
+w.eval(readFileSync('apps/careercompiler-extension/src/content.js','utf8'));w.eval(readFileSync('apps/careercompiler-extension/fixtures/isolated/trap.js','utf8'));
+const send=message=>{let result;listener(message,{id:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",origin:"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",url:"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/background.js"},value=>result=value);return result;};
+let id=0;const host=payload=>{const data=Buffer.from(JSON.stringify({protocolVersion:3,extensionId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',requestId:'dom-pipeline-'+Date.now()+'-'+(++id),...payload}));const header=Buffer.alloc(4);header.writeUInt32LE(data.length);const child=spawnSync('python3',[resolve('scripts/phase2c/native_host.py'),root,'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/'],{input:Buffer.concat([header,data]),timeout:10000});if(child.status!==0)throw Error('host failed');return JSON.parse(child.stdout.subarray(4).toString());};
+const scan=send({type:'CC_SCAN_FORM'});const preparation=host({type:'prepare_application',pageContext:scan.pageContext,fields:scan.fields});
+if(!preparation.ok)throw Error(JSON.stringify(preparation.error));const p=preparation.data;
+const auth=host({type:'authorize_fill',prepared:p,pageUrl:scan.pageContext.url});if(!auth.ok)throw Error(JSON.stringify(auth.error));
+const fill=send({type:'CC_FILL_FORM',expectedPageUrl:scan.pageContext.url,applicationId:p.applicationId,authorization:p.authorization,answers:p.fields});
+const checks=[{scenario:'actual native payload populates synthetic name/contact in jsdom',status:w.document.querySelector('#first_name').value==='Synthetic' && w.document.querySelector('#email').value==='synthetic@example.invalid'?'PASS':'FAIL'},{scenario:'unknown answer remains blank',status:w.document.querySelector('#unknown').value===''?'PASS':'FAIL'},{scenario:'submission trap and manual step retained',status:w.syntheticSubmissionAttempts===0&&w.document.querySelector('#step-two').hidden?'PASS':'FAIL'}];
+checks.push({scenario:"country without explicit evidence must remain unresolved",status:w.document.querySelector("#country").value===""?"PASS":"FAIL",detail:"Synthetic profile specifies Fixture City but no country; Country must require explicit reviewed evidence."});
+checks.push({scenario:'partial attachment failure is visible and not complete',status:fill.ok===false && fill.error?.code==='partial_fill' && fill.results.some(result=>result.attachmentStatus==='not_verified')?'PASS':'FAIL'});
+const file=p.fields.find(f=>f.fillKind==='resume_file');checks.push({scenario:'native synthetic PDF delivered',status:file?.resumeFile?.fileBase64?'PASS':'FAIL'});
+const result={environment:'REAL packaged IPC + jsdom DOM, NO Chrome',checks,fieldResults:fill.results,resumeUpload:'NOT VERIFIED in Chrome. Actual production handler reports not_verified when jsdom has no DataTransfer, retains independent field fills, and requires fresh authorization.',sources:p.fields.map(f=>({type:f.normalizedQuestionType,source:f.answerSource,review:f.requiresReview}))};
+writeFileSync(root+'/dom-transport-results.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));dom.window.close();process.exit(checks.some(c=>c.status==='FAIL')?1:0);
