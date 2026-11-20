@@ -1,3 +1,5 @@
+// Increment when answer authorization semantics change; old handoffs fail closed.
+export const APPLICATION_ANSWER_POLICY_VERSION = "cc-application-answers-v2";
 import type {
   ApplicationQuestionType,
   ApprovedApplicationAnswer,
@@ -106,7 +108,7 @@ function profileValue(type: ApplicationQuestionType, profile: Profile | null, it
     case "current_title":
       return currentEmployment?.title ?? "";
     case "country":
-      return profile.region || profile.city ? "United States" : "";
+      return ""; // Only an explicit reviewed country claim may resolve this field.
     case "work_authorization":
       return profile.workAuthorizationNote;
     default:
@@ -288,7 +290,7 @@ function answerSensitive(field: DetectedApplicationField, answers: SensitiveAnsw
   const key = sensitiveQuestionMap[field.normalizedQuestionType];
   if (!key) return null;
   const saved = answers.find((answer) => answer.key === key);
-  if (!saved || !asText(saved.value)) {
+  if (!saved || !allowedClaimStatuses.has(saved.verificationStatus) || !saved.locked || saved.requiresReview || !asText(saved.value)) {
     return emptyAnswer(field, "Sensitive or legal answer is not configured; user input is required.");
   }
   const fitted = fitAnswer(asText(saved.value), field);
@@ -312,9 +314,36 @@ function answerSensitive(field: DetectedApplicationField, answers: SensitiveAnsw
 
 export function generateApplicationAnswers(input: ApplicationAnswerEngineInput): GeneratedApplicationAnswer[] {
   return input.fields.map((field) => {
+    const question = [field.label, field.nearbyText, field.placeholder, field.elementName, field.elementId, field.ariaLabel].filter(Boolean).join(" ").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");
+    if (/\b(citizenship|citizen|nationality|passport|immigration status|country of birth|birth country|country of origin|residency status|residence status)\b/i.test(question)
+        || /\b(?:country|dial(?:l?ing)?|calling)\s+(?:code|prefix)\b/i.test(question)
+        || /(?:phone|telephone).*(?:country|dial(?:l?ing)?|calling)\s*(?:code|prefix)|(?:country|dial(?:l?ing)?|calling)\s*(?:code|prefix).*(?:phone|telephone)/i.test(question)) {
+      return emptyAnswer(field, "This question needs specific explicit evidence; address or full-phone fields cannot answer it.");
+    }
+    if (field.normalizedQuestionType === "country") {
+      if (/\b(?:work|employment|authori[sz]\w*|eligib\w*|visa|sponsor\w*|permit)\b/i.test(question)) {
+        return emptyAnswer(field, "A work or legal jurisdiction needs specific reviewed evidence; an address-country claim cannot answer it.");
+      }
+      const claims = input.claims.filter((claim) => allowedClaimStatuses.has(claim.verificationStatus) && claim.category.trim().toLowerCase() === "country" && typeof claim.value === "string" && claim.value.trim());
+      const countries = new Set(claims.map((claim) => String(claim.value).trim().toLowerCase()));
+      if (countries.size !== 1) return emptyAnswer(field, countries.size ? "Conflicting explicit country evidence; review required." : "Explicit country evidence is missing; review required.");
+      return fixedAnswer(field, String(claims[0].value).trim(), claims.map((claim) => claim.id));
+    }
+    const legalQuestion = question.replace(/\bin\s+(?:the\s+)?future\b/ig, "future");
+    if (["work_authorization", "future_sponsorship"].includes(field.normalizedQuestionType)
+        && /\b(?:work|employment|authori[sz](?:ed|ation)|sponsorship|visa|permit).{0,40}\b(?:in|within)\b/i.test(legalQuestion)) {
+      return emptyAnswer(field, "Jurisdiction-specific legal questions need a specific reviewed answer; an unscoped saved flag is insufficient.");
+    }
     const sensitive = answerSensitive(field, input.sensitiveAnswers);
     if (sensitive) return sensitive;
 
+    if (["city", "state", "postal_code", "phone"].includes(field.normalizedQuestionType)) {
+      const fixedLocation = profileValue(field.normalizedQuestionType, input.profile, input.careerItems);
+      const reviewed = input.claims.filter((claim) => allowedClaimStatuses.has(claim.verificationStatus) && claim.category.trim().toLowerCase() === field.normalizedQuestionType.replaceAll("_", " ") && typeof claim.value === "string" && claim.value.trim());
+      const values = new Set([fixedLocation, ...reviewed.map((claim) => String(claim.value))].filter(Boolean).map((value) => value.trim().toLowerCase()));
+      if (values.size !== 1) return emptyAnswer(field, values.size ? "Conflicting location/contact evidence; review required." : "Explicit location/contact evidence missing.");
+      return fixedAnswer(field, fixedLocation || String(reviewed[0].value).trim(), reviewed.map((claim) => claim.id));
+    }
     const fixed = profileValue(field.normalizedQuestionType, input.profile, input.careerItems);
     if (fixed) return fixedAnswer(field, fixed, input.profile ? [input.profile.id] : []);
 

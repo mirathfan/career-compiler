@@ -1,14 +1,19 @@
-import { useState } from "react";
+import { saveApplicationNextActionDraft } from "../../lib/copilot/applicationNextAction";
+import { CareerAIButton, CareerAISelection } from "../../components/CareerAIWorkspace";
+import { ApplicationHistoryPanel, ImportedApplicationEvidence } from "./ApplicationHistoryPanel";
+import { isHistoryApplication } from "../../lib/applications/historyContract";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { Bot, Check, Copy, FileText, FolderOpen, Plus, Save, Send, Wand2 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { EmptyState, LoadingState } from "../../components/States";
 import { Badge, PageSection, SearchInput, StatusBadge, Tabs } from "../../components/ui";
 import { prepareApplicationReview } from "../../lib/applications/applicationReview";
 import { applicationQuestionTypes, normalizeDetectedField } from "../../lib/applications/questionClassifier";
 import { useRepository } from "../../lib/database/repositoryContext";
+import { isFollowUpDue } from "../../lib/dashboard/workspace";
 import type { ApplicationFieldRecord, ApplicationQuestionType, ApplicationRecord, ApplicationStatus } from "../../types/domain";
 
 const statuses: ApplicationStatus[] = [
@@ -32,8 +37,24 @@ const applicationViews: Array<{ id: ApplicationView; label: string }> = [
   { id: "closed", label: "Closed" },
 ];
 
-export function ApplicationsPage() {
+function NextActionEditor({ application, save }: { application: ApplicationRecord; save: (value: string, expected: string) => Promise<unknown> }) {
+  const [draft, setDraft] = useState(application.nextAction);
+  const [base, setBase] = useState(application.nextAction);
+  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => { if (!dirty) { setDraft(application.nextAction); setBase(application.nextAction); } }, [application.nextAction, dirty]);
+  return <div><input aria-label="Next action" className="field" placeholder="Next action" value={draft} onChange={event => { setDraft(event.target.value); setDirty(true); setError(""); }} onBlur={async () => {
+    if (!dirty) return;
+    if (base !== application.nextAction) { setError("The next action changed while you were editing. Review the current value before retrying."); return; }
+    try { if (draft !== application.nextAction) await save(draft, base); setDirty(false); } catch (caught) { setError(caught instanceof Error ? caught.message : "The next action could not be saved. Your draft is retained."); }
+  }}/>{error ? <p role="alert">{error} Current: {application.nextAction || "None recorded"} <button className="button" onClick={() => { setDirty(false); setError(""); }}>Use current value</button></p> : null}</div>;
+}
+
+export function ApplicationsPage({ embeddedJobId }: { embeddedJobId?: string } = {}) {
   const repository = useRepository();
+  const [historyParams, setHistoryParams] = useSearchParams();
+  const requestedApplicationId = historyParams.get("applicationId") || historyParams.get("historyApplication");
+  const dueOnly = historyParams.get("followUps") === "due";
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState({ company: "", role: "", jobUrl: "" });
   const [reviewApplicationId, setReviewApplicationId] = useState("");
@@ -48,6 +69,7 @@ export function ApplicationsPage() {
   const resumes = useQuery({ queryKey: ["resume-versions"], queryFn: () => repository.listResumeVersions() });
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: () => repository.listJobs() });
   const fields = useQuery({ queryKey: ["application-fields"], queryFn: () => repository.listApplicationFields() });
+  useEffect(() => { if (requestedApplicationId) setSearch(""); }, [requestedApplicationId]);
   const saveApplication = useMutation({
     mutationFn: (application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">) =>
       repository.saveApplication(application),
@@ -97,12 +119,13 @@ export function ApplicationsPage() {
   if (jobs.isError) throw jobs.error;
   if (fields.isError) throw fields.error;
   const resumeById = new Map((resumes.data ?? []).map((resume) => [resume.id, resume]));
-  const allApplications = applications.data ?? [];
+  const allApplications = (applications.data ?? []).filter((application) => !embeddedJobId || application.jobId === embeddedJobId);
   const fieldsByApplication = new Map<string, ApplicationFieldRecord[]>();
   for (const field of fields.data ?? []) {
     fieldsByApplication.set(field.applicationId, [...(fieldsByApplication.get(field.applicationId) ?? []), field]);
   }
   const selectedApplication = (applications.data ?? []).find((application) => application.id === reviewApplicationId) ?? null;
+  const workspaceApplication = selectedApplication ?? (applications.data ?? []).find(application => application.id === requestedApplicationId);
   const reviewFields = (fields.data ?? []).filter((field) => field.applicationId === reviewApplicationId);
   const matchesView = (application: ApplicationRecord, view: ApplicationView) => {
     const applicationFields = fieldsByApplication.get(application.id) ?? [];
@@ -119,24 +142,22 @@ export function ApplicationsPage() {
   ) as Record<ApplicationView, number>;
   const normalizedSearch = search.trim().toLowerCase();
   const visibleApplications = allApplications.filter((application) => {
-    if (!matchesView(application, activeView)) return false;
+    if (!embeddedJobId && requestedApplicationId) return application.id === requestedApplicationId;
+    if (!embeddedJobId && dueOnly) return isFollowUpDue(application);
+    if (!embeddedJobId && !matchesView(application, activeView)) return false;
     if (!normalizedSearch) return true;
     return [application.company, application.role, application.jobUrl, application.nextAction, application.recruiter]
       .join(" ")
       .toLowerCase()
       .includes(normalizedSearch);
   });
-  const primaryAction = (application: ApplicationRecord) => {
-    if (application.status === "preparing") return "Review answers";
-    if (application.status === "ready") return "Fill application";
-    if (application.status === "applied") return "Add interview";
-    if (application.status === "interview") return "Update interview";
-    if (application.status === "rejected" || application.status === "withdrawn") return "Reopen";
-    return "Open application";
-  };
+  const primaryAction = (application: ApplicationRecord) =>
+    ["preparing", "ready"].includes(application.status) ? "Review answers" : "View application answers";
+  const preserveSubmittedAnswers = Boolean(embeddedJobId && selectedApplication && (selectedApplication.submittedAt || ["applied", "interview", "offer", "rejected", "withdrawn"].includes(selectedApplication.status)));
 
   return (
     <div>
+      {!embeddedJobId ? (
       <PageHeader
         eyebrow="Local job tracker"
         title="Applications"
@@ -149,7 +170,11 @@ export function ApplicationsPage() {
           </>
         }
       />
-      <div className="page-body space-y-5">
+) : null}
+      <div className={embeddedJobId ? "application-inline space-y-5" : "page-body space-y-5"}>
+        {!embeddedJobId ? (
+        <>
+        <ApplicationHistoryPanel/>
         <PageSection title="New application" description="Create a local draft, then attach a resume and generated answers before opening the real application form.">
           <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_1.4fr_auto]">
             <input className="field" placeholder="Company" value={draft.company} onChange={(event) => setDraft({ ...draft, company: event.target.value })} />
@@ -160,24 +185,28 @@ export function ApplicationsPage() {
               setDraft({ company: "", role: "", jobUrl: "" });
             }}><Plus size={16} />Add</button>
           </div>
-        </PageSection>
+        </PageSection></>
 
+) : null}
         <PageSection
           title="Application workflow"
           description="Use the view tabs to focus on the next action instead of scanning a raw tracker table."
           actions={<div className="w-72"><SearchInput value={search} onChange={setSearch} placeholder="Search applications" /></div>}
         >
-          <Tabs
+          {!embeddedJobId && requestedApplicationId ? <div className="mb-4 flex flex-wrap items-center gap-3" role="status"><p className="text-sm text-slate-600">{visibleApplications.length ? "Showing the linked application record." : "This application record is not available."}</p><button className="button" onClick={() => { const next = new URLSearchParams(historyParams); next.delete("applicationId"); next.delete("historyApplication"); setHistoryParams(next); }}>Show all applications</button></div> : null}
+          {!embeddedJobId && dueOnly && !requestedApplicationId ? <div className="mb-4 flex flex-wrap items-center gap-3"><p className="text-sm text-slate-600">Follow-ups due on your saved dates.</p><button className="button" onClick={() => { const next = new URLSearchParams(historyParams); next.delete("followUps"); setHistoryParams(next); }}>Show all applications</button></div> : null}
+          {!embeddedJobId && !requestedApplicationId && !dueOnly ? <Tabs
             value={activeView}
             onChange={setActiveView}
             tabs={applicationViews.map((view) => ({ ...view, count: viewCounts[view.id] }))}
             label="Application views"
-          />
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          /> : null}
+          <div className={embeddedJobId ? "mt-4 grid gap-4" : "mt-4 grid gap-4 xl:grid-cols-2"}>
               {visibleApplications.map((application) => {
-                const resume = resumeById.get(application.resumeVersionId);
+                const resume = resumeById.get(application.submittedResumeVersionId || application.resumeVersionId);
                 const applicationFields = fieldsByApplication.get(application.id) ?? [];
                 const isReviewing = reviewApplicationId === application.id;
+                const imported=isHistoryApplication(application.source);
                 const needsReview = applicationFields.filter((field) => field.requiresReview).length;
                 return (
                   <article key={application.id} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
@@ -200,28 +229,30 @@ export function ApplicationsPage() {
                       <div><p className="eyebrow">Last activity</p><p className="mt-1 text-slate-700">{new Date(application.updatedAt).toLocaleDateString()}</p></div>
                     </div>
 
-                    <div className="mt-4 grid gap-2 md:grid-cols-2">
-                      <label className="block text-xs font-semibold text-slate-500">Status<select className="field mt-1" value={application.status} onChange={(event) => saveApplication.mutate({ ...application, status: event.target.value as ApplicationStatus, appliedDate: event.target.value === "applied" && !application.appliedDate ? new Date().toISOString().slice(0, 10) : application.appliedDate })}>{statuses.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
-                      <label className="block text-xs font-semibold text-slate-500">Resume<select className="field mt-1" value={application.resumeVersionId} onChange={(event) => saveApplication.mutate({ ...application, resumeVersionId: event.target.value })}><option value="">Not linked</option>{(resumes.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-                      <label className="block text-xs font-semibold text-slate-500">Applied<input className="field mt-1" type="date" value={application.appliedDate} onChange={(event) => saveApplication.mutate({ ...application, appliedDate: event.target.value })} /></label>
+                    {imported?<ImportedApplicationEvidence application={application}/>:null}
+                    <details className="application-edit-details"><summary>Edit tracking details</summary><div className="mt-4 grid gap-2 md:grid-cols-2">
+                      <label className="block text-xs font-semibold text-slate-500">Status<select disabled={imported} className="field mt-1" value={application.status} onChange={(event) => saveApplication.mutate({ ...application, status: event.target.value as ApplicationStatus, appliedDate: event.target.value === "applied" && !application.appliedDate ? new Date().toISOString().slice(0, 10) : application.appliedDate })}>{statuses.map((status) => <option key={status} value={status}>{status}</option>)}</select></label>
+                      <label className="block text-xs font-semibold text-slate-500">Resume<select className="field mt-1" value={application.resumeVersionId} disabled={Boolean(application.submittedAt || ["applied", "interview", "offer", "rejected", "withdrawn"].includes(application.status))} onChange={(event) => saveApplication.mutate({ ...application, resumeVersionId: event.target.value })}><option value="">Not linked</option>{(resumes.data ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+                      <label className="block text-xs font-semibold text-slate-500">Applied<input className="field mt-1" type="date" disabled={imported} value={application.appliedDate} onChange={(event) => saveApplication.mutate({ ...application, appliedDate: event.target.value })} /></label>
                       <label className="block text-xs font-semibold text-slate-500">Follow-up<input className="field mt-1" type="date" value={application.followUpDate} onChange={(event) => saveApplication.mutate({ ...application, followUpDate: event.target.value })} /></label>
                     </div>
 
                     <div className="mt-4 grid gap-2 md:grid-cols-2">
-                      <input className="field" placeholder="Recruiter" defaultValue={application.recruiter} onBlur={(event) => { if (event.target.value !== application.recruiter) saveApplication.mutate({ ...application, recruiter: event.target.value }); }} />
-                      <input className="field" placeholder="Next action" defaultValue={application.nextAction} onBlur={(event) => { if (event.target.value !== application.nextAction) saveApplication.mutate({ ...application, nextAction: event.target.value }); }} />
-                      <textarea className="field min-h-20 md:col-span-2" placeholder="Notes" defaultValue={application.notes} onBlur={(event) => { if (event.target.value !== application.notes) saveApplication.mutate({ ...application, notes: event.target.value }); }} />
+                      <input aria-label="Recruiter" className="field" placeholder="Recruiter" defaultValue={application.recruiter} onBlur={(event) => { if (event.target.value !== application.recruiter) saveApplication.mutate({ ...application, recruiter: event.target.value }); }} />
+                      <NextActionEditor application={application} save={async (value, expected) => { await saveApplicationNextActionDraft(repository, application.id, value, expected); await queryClient.invalidateQueries(); }}/>
+                      <textarea aria-label="Application notes" className="field min-h-20 md:col-span-2" placeholder="Notes" defaultValue={application.notes} onBlur={(event) => { if (event.target.value !== application.notes) saveApplication.mutate({ ...application, notes: event.target.value }); }} />
                     </div>
 
+                    </details>
                     <div className="mt-4 flex flex-wrap gap-2">
-                      <button className={isReviewing ? "button button-primary" : "button"} type="button" aria-pressed={isReviewing} onClick={() => setReviewApplicationId((current) => current === application.id ? "" : application.id)}>
+                      {!imported ? <button className={isReviewing ? "button button-primary" : "button"} type="button" aria-pressed={isReviewing} onClick={() => setReviewApplicationId((current) => current === application.id ? "" : application.id)}>
                         <Wand2 size={15} />{primaryAction(application)}
-                      </button>
-                      {application.status !== "applied" ? <button className="button" type="button" onClick={() => saveApplication.mutate({ ...application, status: "applied", appliedDate: application.appliedDate || new Date().toISOString().slice(0, 10) })}><Send size={15} />Mark submitted</button> : null}
-                      <Link className="button" to={`/copilot?contextType=application&contextId=${encodeURIComponent(application.id)}`}><Bot size={15} />Ask Copilot</Link>
+                      </button> : null}
+                      {!imported && ["preparing", "ready"].includes(application.status) ? <button className="button" type="button" onClick={() => saveApplication.mutate({ ...application, status: "applied", appliedDate: application.appliedDate || new Date().toISOString().slice(0, 10) })}><Send size={15} />Mark submitted</button> : null}
+                      <CareerAIButton selection={{ type: "application", id: application.id, label: `${application.company} · ${application.role}` }}><Bot size={15} />Ask Copilot</CareerAIButton>
                       {resume ? <Link className="button" to={`/library?resumeId=${encodeURIComponent(resume.id)}`}><FileText size={15} />Open resume</Link> : null}
                       {resume?.lastExportPath ? <button className="button" type="button" onClick={() => void invoke("reveal_in_finder", { path: resume.lastExportPath })}><FolderOpen size={15} />Reveal PDF</button> : null}
-                      <button className="button" type="button" onClick={() => saveApplication.mutate({ ...application, id: undefined, role: `${application.role} - related`, status: "preparing", appliedDate: "", createdAt: undefined, updatedAt: undefined })}><Copy size={15} />Duplicate</button>
+                      <button disabled={imported} className="button button-subtle" type="button" onClick={() => saveApplication.mutate({ ...application, id: undefined, role: `${application.role} - related`, status: "preparing", appliedDate: "", createdAt: undefined, updatedAt: undefined })}><Copy size={15} />Duplicate</button>
                     </div>
                   </article>
                 );
@@ -234,6 +265,7 @@ export function ApplicationsPage() {
           ) : null}
         </PageSection>
 
+        {workspaceApplication && !embeddedJobId ? <CareerAISelection type="application" id={workspaceApplication.id} label={`${workspaceApplication.company} · ${workspaceApplication.role}`} /> : null}
         {selectedApplication ? (
           <PageSection
             title={`Application review: ${selectedApplication.company}`}
@@ -241,13 +273,14 @@ export function ApplicationsPage() {
             actions={<button className="button" type="button" onClick={() => setReviewApplicationId("")}>Close</button>}
           >
 
-            <div className="mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_180px_220px_auto]">
+            {preserveSubmittedAnswers ? <p className="field-hint">Submitted answers are shown for reference. Preparation changes are disabled for this completed application.</p> : null}
+            <div className={embeddedJobId ? "mt-4 grid gap-2" : "mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_180px_220px_auto]"}>
               <input className="field" placeholder="Detected question or field label" value={fieldDraft.question} onChange={(event) => setFieldDraft({ ...fieldDraft, question: event.target.value })} />
               <input className="field" placeholder="Input type" value={fieldDraft.inputType} onChange={(event) => setFieldDraft({ ...fieldDraft, inputType: event.target.value })} />
               <select className="field" value={fieldDraft.normalizedQuestionType} onChange={(event) => setFieldDraft({ ...fieldDraft, normalizedQuestionType: event.target.value as ApplicationQuestionType })}>
                 {applicationQuestionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
               </select>
-              <button className="button button-primary" type="button" disabled={!fieldDraft.question.trim() || prepareReview.isPending} onClick={() => prepareReview.mutate(selectedApplication)}>
+              <button className="button button-primary" type="button" disabled={preserveSubmittedAnswers || !fieldDraft.question.trim() || prepareReview.isPending} onClick={() => prepareReview.mutate(selectedApplication)}>
                 <Wand2 size={15} aria-hidden="true" />
                 Generate
               </button>
@@ -275,11 +308,11 @@ export function ApplicationsPage() {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <button className="icon-button" title="Approve answer" type="button" onClick={() => saveField.mutate({ ...field, approved: true, requiresReview: false })}><Check size={15} /></button>
+                        <button className="icon-button" title="Approve answer" disabled={preserveSubmittedAnswers} type="button" onClick={() => saveField.mutate({ ...field, approved: true, requiresReview: false })}><Check size={15} /></button>
                         <button className="icon-button" title="Save to answer memory" type="button" disabled={!String(field.finalAnswer ?? "").trim()} onClick={() => saveApprovedAnswer.mutate(field)}><Save size={15} /></button>
                       </div>
                     </div>
-                    <textarea className="field mt-3 min-h-20 bg-white" defaultValue={String(field.finalAnswer ?? "")} onBlur={(event) => { if (event.target.value !== String(field.finalAnswer ?? "")) saveField.mutate({ ...field, finalAnswer: event.target.value, userEdited: true, requiresReview: true }); }} />
+                    <textarea readOnly={preserveSubmittedAnswers} aria-label={`Answer to ${field.originalQuestion}`} className="field mt-3 min-h-20 bg-white" defaultValue={String(field.finalAnswer ?? "")} onBlur={(event) => { if (event.target.value !== String(field.finalAnswer ?? "")) saveField.mutate({ ...field, finalAnswer: event.target.value, userEdited: true, requiresReview: true }); }} />
                     {field.warnings.length ? <div className="mt-2 flex flex-wrap gap-2">{field.warnings.map((warning) => <span key={warning} className="rounded border border-amber-200 bg-white px-2 py-1 text-xs font-semibold text-amber-800">{warning}</span>)}</div> : null}
                     {field.reasoningSummary ? <p className="mt-2 text-xs text-slate-600">{field.reasoningSummary}</p> : null}
                   </div>
