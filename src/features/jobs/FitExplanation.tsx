@@ -1,0 +1,21 @@
+import { EligibilityReview } from "./EligibilityReview";
+import { eligibilityLabel } from "../../lib/jobs/fitAssessment";
+import { useEffect, useRef, useState } from "react";
+import type { FitAssessment, ApplicationMatch } from "../../lib/jobs/fitAssessment";
+export function FitExplanation({ assessment, application, allowEligibilityReview = true }: {assessment:FitAssessment;application:ApplicationMatch;allowEligibilityReview?:boolean}) {
+  const [selected,setSelected]=useState("");
+  const inspector = useRef<HTMLElement>(null);
+  const citationOpener = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (selected) inspector.current?.focus(); }, [selected]);
+  const evidence=assessment.evidence.find(item=>item.id===selected);
+  const groups=[{title:"Supported requirements",test:(status:string,optional:boolean)=>status==="ELIGIBLE"&&!optional},{title:"Confirm before applying",test:(status:string,optional:boolean)=>status==="NEEDS_CONFIRMATION"&&!optional},{title:"Explicit disqualifiers",test:(status:string)=>status==="DISQUALIFIED"},{title:"Trainable and preferred gaps",test:(status:string,optional:boolean)=>status!=="ELIGIBLE"&&optional}];
+  return <section className="workspace-section requirement-fit" aria-label="Deterministic job fit">
+    <div className="fit-summary-heading"><div><span className="section-kicker">Evidence, before optimism</span><h3>Understand your fit</h3><span className={`eligibility-status eligibility-${assessment.eligibility.toLowerCase()}`}>{eligibilityLabel[assessment.eligibility]}</span></div><div className="fit-score"><strong>{assessment.score??"?"}</strong><span>{assessment.score===null?"Unknown fit":"/100 local fit"}</span></div></div>
+    <p className="muted-copy">Deterministic comparison of the full saved description and current evidence. This score is not an interview or offer probability. Eligibility is evaluated separately.</p>
+    <div className="application-proof"><strong>Application history</strong><p>{application.state==="POSSIBLE_MATCH"?"Possible match · same employer and role, but posting identity is not confirmed.":application.state==="NONE"?"No confirmed application for this posting in local records.":application.records.map(record=>`${record.status === "interview"?"Interviewing":record.status.replaceAll("_"," ")} · ${record.appliedDate||record.submittedAt||"date not recorded"}`).join("; ")}</p></div>
+    {allowEligibilityReview ? <EligibilityReview /> : null}
+    {groups.map(group=>{const rows=assessment.reasons.filter(reason=>group.test(reason.status,Boolean(reason.preferred||reason.trainable)));return <details key={group.title} open className="requirement-group"><summary>{group.title} <span>{rows.length}</span></summary>{rows.length?<ul>{rows.map(reason=><li key={reason.id}><span className="requirement-dimension">{reason.dimension} · {reason.code.replaceAll("_"," ")}</span><blockquote>{reason.requirement}</blockquote><p>{reason.explanation}</p>{reason.evidenceIds.length?<div className="evidence-links">{reason.evidenceIds.map(id=><button key={id} type="button" className="text-link" onClick={event=>{citationOpener.current=event.currentTarget;setSelected(id);}}>Inspect {id}</button>)}</div>:<small>No supporting candidate evidence supplied.</small>}</li>)}</ul>:<p className="muted-copy">None identified by supported local rules. Review the full description.</p>}</details>;})}
+    {evidence?<aside className="evidence-inspector" ref={inspector} tabIndex={-1} role="region" aria-label="Selected supporting evidence"><div className="section-heading"><strong>{evidence.category} · {evidence.id}</strong><button type="button" className="text-link" onClick={()=>{setSelected("");citationOpener.current?.focus();}}>Close evidence</button></div><p>{evidence.text}</p></aside>:null}
+    <details><summary>Assessment provenance</summary><p>Assessed {new Date(assessment.assessedAt).toLocaleString()} · current snapshot · deterministic rules {assessment.version}</p><p className="fingerprint-label">Job revision: {assessment.jobFingerprint}<br/>Evidence revision: {assessment.evidenceFingerprint}</p><p>Reassessed after relevant evidence or requirement changes. Unsupported or ambiguous requirements require manual confirmation.</p></details>
+  </section>;
+}

@@ -1,0 +1,22 @@
+import { it, expect } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { RepositoryContext } from "../../lib/database/repositoryContext";
+import { MemoryRepository } from "../../lib/database/memoryRepository";
+import { populateFitFixtures, FIT_FIXTURE_DATE } from "../../lib/jobs/fitFixtures";
+import { loadFitFeed } from "../../lib/jobs/fitFeed";
+import { FitExplanation } from "./FitExplanation";
+it("returns keyboard focus to the exact citation that opened the evidence inspector", async () => {
+ const repository = new MemoryRepository(); await populateFitFixtures(repository);
+ const row = (await loadFitFeed(repository, FIT_FIXTURE_DATE)).find(row => row.job.id === "fit-job-0")!;
+ render(<QueryClientProvider client={new QueryClient()}><RepositoryContext.Provider value={{repository,ready:true,error:null}}><FitExplanation assessment={row.assessment} application={row.application}/></RepositoryContext.Provider></QueryClientProvider>);
+ const user = userEvent.setup();
+ const citations = screen.getAllByRole("button", {name:"Inspect synthetic-fact"});
+ const opener = citations[1];
+ await user.click(opener);
+ expect(screen.getByRole("region", {name:"Selected supporting evidence"})).toHaveFocus();
+ await user.click(screen.getByRole("button", {name:"Close evidence"}));
+ expect(opener).toHaveFocus();
+ expect(screen.queryByRole("region", {name:"Selected supporting evidence"})).not.toBeInTheDocument();
+});
