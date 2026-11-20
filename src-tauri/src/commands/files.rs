@@ -462,6 +462,9 @@ mod tests {
         assert!(supported_evidence_file(Path::new("README.md")));
         assert!(supported_evidence_file(Path::new("package.json")));
         assert!(!supported_evidence_file(Path::new("install.sh")));
+        assert!(!supported_evidence_file(Path::new("synthetic-resume.pdf")));
+        assert!(!supported_evidence_file(Path::new("synthetic-resume.docx")));
+        assert!(!supported_evidence_file(Path::new("scanned-resume.png")));
     }
 
     #[test]

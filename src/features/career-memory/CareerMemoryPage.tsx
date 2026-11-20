@@ -422,10 +422,10 @@ function FactEditor({
   );
 }
 
-export function CareerMemoryPage() {
+export function CareerMemoryPage({ embedded = false, intakeOnly = false }: { embedded?: boolean; intakeOnly?: boolean } = {}) {
   const repository = useRepository();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [newItem, setNewItem] = useState(emptyItem("project"));
   const [newSkill, setNewSkill] = useState<Partial<Skill> & Pick<Skill, "name" | "category">>({
@@ -507,7 +507,11 @@ export function CareerMemoryPage() {
   if (resumesQuery.isError) throw resumesQuery.error;
   if (variantsQuery.isError) throw variantsQuery.error;
 
-  const selected = items.find((item) => item.id === selectedId) ?? items[0] ?? null;
+  const requestedFactId = searchParams.get("factId");
+  const requestedItemId = searchParams.get("itemId");
+  const requestedFact = requestedFactId ? facts.find(f => f.id === requestedFactId && f.enabled && !["prohibited", "needs_review"].includes(f.evidenceStatus)) : undefined;
+  const preciseId = requestedFactId ? requestedFact?.careerItemId : requestedItemId;
+  const selected = requestedFactId || requestedItemId ? items.find(item => item.id === preciseId && item.enabled) ?? null : items.find((item) => item.id === selectedId) ?? items[0] ?? null;
   const counts = new Map<string, number>();
   for (const fact of facts) counts.set(fact.careerItemId, (counts.get(fact.careerItemId) ?? 0) + 1);
   const normalizeStatement = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -549,7 +553,7 @@ export function CareerMemoryPage() {
   }
   const itemFacts = selected
     ? facts.filter(
-        (fact) => fact.careerItemId === selected.id && (!reviewOnly || reviewReasonsByFact.get(fact.id)?.length),
+        (fact) => fact.careerItemId === selected.id && (!requestedFactId || fact.id === requestedFactId) && (!reviewOnly || reviewReasonsByFact.get(fact.id)?.length),
       )
     : [];
   const selectedReviewCount = selected
@@ -605,6 +609,9 @@ export function CareerMemoryPage() {
 
   return (
     <div>
+      {requestedFactId || requestedItemId ? <button className="button" onClick={() => { const next = new URLSearchParams(searchParams); next.delete("factId"); next.delete("itemId"); setSearchParams(next); }}>Show all evidence</button> : null}
+      {(requestedFactId || requestedItemId) && !itemsQuery.isPending && !factsQuery.isPending && !selected ? <p role="alert">Cited evidence is unavailable or no longer permitted. No other record is selected.</p> : null}
+      {!embedded ? (
       <PageHeader
         eyebrow="Evidence database"
         title="Career Memory"
@@ -627,14 +634,15 @@ export function CareerMemoryPage() {
           </div>
         }
       />
-      <div className="page-body space-y-5">
+) : null}
+      <div className={embedded ? "workspace-content space-y-5" : "page-body space-y-5"}>
         <div className="grid gap-4 md:grid-cols-3">
           <StatCard label="Reviewed facts" value={facts.filter((fact) => fact.evidenceStatus === "verified" || fact.evidenceStatus === "user_provided").length} detail="Eligible for grounded resume generation when enabled" />
           <StatCard label="Review queue" value={facts.filter((fact) => (reviewReasonsByFact.get(fact.id)?.length ?? 0) > 0).length} tone="amber" detail="Numeric, stale, duplicate, or source-missing facts" />
           <StatCard label="Resume usage" value={usageByFact.size} detail="Facts already used in generated resumes" />
         </div>
 
-        {showSmartIntake ? (
+        {showSmartIntake || intakeOnly ? (
           <SmartCareerIntake
             items={items}
             facts={facts}
@@ -644,7 +652,7 @@ export function CareerMemoryPage() {
           />
         ) : null}
 
-        <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
+        {!intakeOnly ? <div className="grid gap-6 xl:grid-cols-[360px_minmax(0,1fr)]">
         <aside className="space-y-4">
           <div className="panel p-4">
             <h3 className="text-base font-semibold text-slate-950">Add career item</h3>
@@ -685,7 +693,12 @@ export function CareerMemoryPage() {
                               ? "border-blue-300 bg-blue-50"
                               : "border-slate-200 bg-white hover:bg-slate-50",
                           ].join(" ")}
-                          onClick={() => setSelectedId(item.id)}
+                          onClick={() => {
+                            setSelectedId(item.id);
+                            if (requestedFactId || requestedItemId) {
+                              const next = new URLSearchParams(searchParams); next.delete("factId"); next.delete("itemId"); setSearchParams(next);
+                            }
+                          }}
                         >
                           <span className="block font-semibold text-slate-950">{item.title}</span>
                           <span className="mt-1 flex flex-wrap gap-2 text-xs text-slate-500">
@@ -962,7 +975,7 @@ export function CareerMemoryPage() {
             </>
           )}
         </section>
-      </div>
+      </div> : null}
     </div>
     </div>
   );

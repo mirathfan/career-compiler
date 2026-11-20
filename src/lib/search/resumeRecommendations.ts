@@ -66,7 +66,7 @@ export async function generateResumeRecommendations(repository: AppRepository, t
   return scored;
 }
 
-function scoreResume(
+export function scoreResume(
   job: Job,
   resume: ResumeVersion,
   jobSkills: string[],

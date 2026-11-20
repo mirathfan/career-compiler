@@ -5,9 +5,9 @@ function bulletKey(careerItemId: string, sourceFactIds: string[]) {
 }
 
 function flatten(resume: TailoredResume) {
-  return [...resume.projects.map((section) => ({ section: "projects", value: section })),
-    ...resume.experience.map((section) => ({ section: "experience", value: section }))]
-    .flatMap(({ section, value }) =>
+  return [...resume.projects.map((section, sectionIndex) => ({ section: "projects", value: section, sectionIndex })),
+    ...resume.experience.map((section, sectionIndex) => ({ section: "experience", value: section, sectionIndex }))]
+    .flatMap(({ section, value, sectionIndex }) =>
       value.bullets
         .filter((bullet) => bullet.included)
         .map((bullet, index) => ({
@@ -15,6 +15,7 @@ function flatten(resume: TailoredResume) {
           careerItemId: value.careerItemId,
           bullet,
           index,
+          sectionIndex,
           key: bulletKey(value.careerItemId, bullet.sourceFactIds),
         })),
     );
@@ -52,14 +53,14 @@ export function semanticResumeDiff(before: TailoredResume, after: TailoredResume
         explanation: "Reworded the same source evidence for the target role.",
       });
     }
-    if (previous.index !== current.index || previous.section !== current.section) {
+    if (previous.index !== current.index || previous.sectionIndex !== current.sectionIndex || previous.section !== current.section) {
       entries.push({
         category: "reordered",
         section: current.section,
         careerItemId: current.careerItemId,
         sourceFactIds: current.bullet.sourceFactIds,
-        before: `${previous.section} position ${previous.index + 1}`,
-        after: `${current.section} position ${current.index + 1}`,
+        before: `${previous.section} item ${previous.sectionIndex + 1}, bullet ${previous.index + 1}`,
+        after: `${current.section} item ${current.sectionIndex + 1}, bullet ${current.index + 1}`,
         explanation: "Moved evidence within the resume structure.",
       });
     }

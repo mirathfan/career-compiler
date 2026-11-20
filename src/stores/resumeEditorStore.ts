@@ -9,7 +9,7 @@ interface ResumeEditorStore {
   future: TailoredResume[];
   dirty: boolean;
   setResume: (resume: TailoredResume) => void;
-  setReviewDraft: (resume: TailoredResume, baseline: TailoredResume) => void;
+  setReviewDraft: (resume: TailoredResume, baseline: TailoredResume, unsaved?: boolean) => void;
   applyResume: (resume: TailoredResume) => void;
   updateBullet: (bulletId: string, text: string) => void;
   toggleBullet: (bulletId: string) => void;
@@ -70,8 +70,8 @@ export const useResumeEditorStore = create<ResumeEditorStore>()(persist((set, ge
   future: [],
   dirty: false,
   setResume: (resume) => set({ resume: clone(resume), deterministicBaseline: null, history: [], future: [], dirty: false }),
-  setReviewDraft: (resume, baseline) =>
-    set({ resume: clone(resume), deterministicBaseline: clone(baseline), history: [], future: [], dirty: false }),
+  setReviewDraft: (resume, baseline, unsaved = false) =>
+    set({ resume: clone(resume), deterministicBaseline: clone(baseline), history: [], future: [], dirty: unsaved }),
   applyResume: (resume) =>
     set((state) => ({
       resume: clone(resume),

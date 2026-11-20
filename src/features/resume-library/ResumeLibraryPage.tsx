@@ -1,3 +1,6 @@
+import { MasterPdfPreview } from "./MasterPdfPreview";
+import { ProfileMasterCreator } from "./ProfileMasterCreator";
+import { CareerAIButton, CareerAISelection } from "../../components/CareerAIWorkspace";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -258,7 +261,8 @@ function ImprovementSummary({
 export function ResumeLibraryPage() {
   const repository = useRepository();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedResumeId = searchParams.get("resumeId");
   const [error, setError] = useState("");
   const [openResumeId, setOpenResumeId] = useState(() => searchParams.get("resumeId") ?? "");
   const [regenerateId, setRegenerateId] = useState("");
@@ -271,8 +275,11 @@ export function ResumeLibraryPage() {
   const [statusFilter, setStatusFilter] = useState("active");
   const [targetJobId, setTargetJobId] = useState(() => searchParams.get("jobId") ?? "");
   const [reviewResumeId, setReviewResumeId] = useState(() => searchParams.get("resumeId") ?? "");
+  useEffect(() => { if (requestedResumeId) { setOpenResumeId(requestedResumeId); setReviewResumeId(requestedResumeId); } }, [requestedResumeId]);
   const [reviewJobId, setReviewJobId] = useState(() => searchParams.get("jobId") ?? "");
+  const [reviewToolsOpen, setReviewToolsOpen] = useState(false);
   const [reviewMode, setReviewMode] = useState<ResumeReviewMode>(() => searchParams.get("jobId") ? "job_specific" : "general");
+  const [creatingProfile, setCreatingProfile] = useState(false);
   const [editingResumeId, setEditingResumeId] = useState("");
   const [editingResume, setEditingResume] = useState<TailoredResume | null>(null);
   const resumesQuery = useQuery({ queryKey: ["resumes"], queryFn: () => repository.listResumeVersions() });
@@ -301,7 +308,7 @@ export function ResumeLibraryPage() {
       return repository.saveResumeVersion({
         jobId: resume.jobId,
         name: `${resume.name} Copy`,
-        kind: "tailored",
+        kind: resume.kind === "master" && !resume.jobId ? "master" : "tailored",
         templateId: resume.templateId,
         contentJson: resume.contentJson,
         validationJson: resume.validationJson,
@@ -616,6 +623,7 @@ export function ResumeLibraryPage() {
   const submittedIds = new Set((applicationsQuery.data ?? []).flatMap((application) => [application.resumeVersionId, application.submittedResumeVersionId].filter(Boolean)));
   const normalizedSearch = search.trim().toLowerCase();
   const resumes = (resumesQuery.data ?? []).filter((resume) => {
+    if (requestedResumeId) return resume.id === requestedResumeId;
     const job = jobById.get(resume.jobId);
     const haystack = [
       resume.name,
@@ -637,10 +645,13 @@ export function ResumeLibraryPage() {
 
   return (
     <div>
+      {requestedResumeId ? <div role="status"><p>{resumes.length ? "Showing the exact linked résumé version." : "Cited résumé version is unavailable. No other version was selected."}</p><button className="button" onClick={() => { const next = new URLSearchParams(searchParams); next.delete("resumeId"); setSearchParams(next); }}>Show all versions</button></div> : null}
+      {openResumeId && resumesQuery.data?.some(item => item.id === openResumeId) ? <CareerAISelection type="resume" id={openResumeId} label={resumesQuery.data.find(item => item.id === openResumeId)!.name} /> : null}
       <PageHeader
         eyebrow="Local versions"
-        title="Resume Library"
-        description="Find, compare, reuse, and manage generated resumes without exposing raw version IDs as the primary interface."
+        title="Resumes"
+        actions={<><Link className="button" to="/profile?section=import&intake=1">Import existing résumé</Link><button className="button button-primary" onClick={() => setCreatingProfile(true)}>Create Master Résumé</button><Link className="button" to="/jobs">Tailor for job</Link></>}
+        description="Your master resume and tailored versions, ready to review and reuse."
         meta={
           <>
             <Badge tone="blue">{resumesQuery.data?.length ?? 0} total</Badge>
@@ -650,9 +661,11 @@ export function ResumeLibraryPage() {
         }
       />
       <div className="page-body space-y-5">
+        <section className="workspace-note" aria-label="Resume workflow"><h3>Import, create, or tailor</h3><p>Import existing résumé extracts local PDF/DOCX text for reviewed career records. It preserves your file, not its visual layout.</p><p>Create Master Résumé builds a general résumé from your approved profile without a job. Tailor for job uses a saved job and a chosen source résumé, with a before-and-after review before saving a child.</p></section>
+        {creatingProfile ? <ProfileMasterCreator onClose={() => setCreatingProfile(false)} /> : null}
         {error ? <InlineError message={error} /> : null}
         <PageSection title="Find a resume" description="Search by company, role, skill, or bullet text. Generate recommendations against a saved job when you need a base version.">
-          <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_180px_minmax(220px,1fr)_auto]">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_180px_minmax(220px,1fr)_auto]">
             <SearchInput value={search} onChange={setSearch} placeholder="Search resumes, companies, roles, skills, bullets" />
             <select className="field" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               <option value="active">Active</option>
@@ -700,6 +713,8 @@ export function ResumeLibraryPage() {
           ) : null}
         </PageSection>
 
+        <details className="surface-section resume-review-tools" open={reviewToolsOpen} onToggle={(event) => setReviewToolsOpen(event.currentTarget.open)}>
+          <summary>Review and improve a resume</summary>
         <PageSection
           title="Resume Review"
           description="Score a complete resume, inspect evidence and submission risks, then apply only safe changes to a new child version."
@@ -712,7 +727,7 @@ export function ResumeLibraryPage() {
             </>
           ) : undefined}
         >
-          <div className="grid gap-3 lg:grid-cols-[minmax(220px,1.2fr)_210px_minmax(220px,1fr)_auto]">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,1.2fr)_210px_minmax(220px,1fr)_auto]">
             <label className="text-sm font-semibold text-slate-700">
               Resume
               <select
@@ -815,6 +830,8 @@ export function ResumeLibraryPage() {
           )}
         </PageSection>
 
+        </details>
+
         {selectedImprovementResult ? (
           <ImprovementSummary
             result={selectedImprovementResult}
@@ -888,7 +905,7 @@ export function ResumeLibraryPage() {
         {resumes.length === 0 ? (
           <EmptyState
             title="No resume versions yet"
-            body="Create or import a Master Resume first. Tailored variants created from that base will appear here."
+            body="Import an existing résumé or add career evidence first. Create a résumé from your approved profile, then tailor a child for a saved job."
           />
         ) : (
           <div className="grid gap-4 xl:grid-cols-2">
@@ -948,6 +965,7 @@ export function ResumeLibraryPage() {
                     <button className="button" type="button" onClick={() => setOpenResumeId((current) => current === resume.id ? "" : resume.id)}>
                       {openResumeId === resume.id ? "Hide resume" : "View resume"}
                     </button>
+                    <details className="resume-more-actions"><summary>More options</summary><div className="action-row">
                     <button className="button" type="button" onClick={() => duplicateResume.mutate(resume.id)}>
                       <Copy size={14} aria-hidden="true" /> Duplicate
                     </button>
@@ -956,9 +974,9 @@ export function ResumeLibraryPage() {
                         <FileCheck2 size={14} aria-hidden="true" /> Mark as master
                       </button>
                     ) : null}
-                    <Link className="button" to={`/copilot?contextType=resume&contextId=${encodeURIComponent(resume.id)}`}>
+                    <CareerAIButton selection={{ type: "resume", id: resume.id, label: resume.name }}>
                       <Bot size={14} aria-hidden="true" /> Ask Copilot
-                    </Link>
+                    </CareerAIButton>
                     <button className={isFavorite ? "button border-amber-300 bg-amber-50 text-amber-800" : "button"} type="button" onClick={() => toggleFavorite.mutate({ id: resume.id, favorite: !isFavorite })}>
                       <Star size={14} aria-hidden="true" /> {isFavorite ? "Unfavorite" : "Favorite"}
                     </button>
@@ -969,6 +987,7 @@ export function ResumeLibraryPage() {
                       className="button"
                       type="button"
                       onClick={() => {
+                        setReviewToolsOpen(true);
                         setReviewResumeId(resume.id);
                         setReviewJobId(reviewMode === "general" || resume.kind === "master" ? "" : resume.jobId);
                         setActiveReview(null);
@@ -1012,6 +1031,7 @@ export function ResumeLibraryPage() {
                     >
                       <Trash2 size={14} aria-hidden="true" /> Delete
                     </button>
+                    </div></details>
                   </div>
 
                   {openResumeId === resume.id ? (
@@ -1027,6 +1047,7 @@ export function ResumeLibraryPage() {
                           </Suspense>
                         </div>
                         <aside className="space-y-4 text-sm">
+                          {resume.kind === "master" ? <MasterPdfPreview key={`${resume.id}:${resume.updatedAt}`} source={{ versionId: resume.id }} reviewed={true} /> : null}
                           <div className="rounded-md border border-slate-200 bg-white p-4">
                             <p className="font-semibold text-slate-950">Generation</p>
                             <p className="mt-1 text-slate-600">Kind: {resume.kind}</p>

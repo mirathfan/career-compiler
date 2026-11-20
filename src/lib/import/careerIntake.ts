@@ -503,7 +503,7 @@ function fact(
         statement,
         careerItemId: "",
         careerItemTitle: itemTitle,
-        evidenceStatus: "user_provided",
+        evidenceStatus: "needs_review",
         sourceType,
         sourceReference,
         skillTags,

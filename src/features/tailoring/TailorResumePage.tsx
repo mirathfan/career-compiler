@@ -1,3 +1,5 @@
+import { createJobSpecificVariant } from "../../lib/tailoring/jobSpecificVariant";
+import { saveReviewedTailoredChild } from "../../lib/tailoring/reviewedChild";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -6,6 +8,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   BrainCircuit,
   Check,
@@ -98,12 +101,13 @@ function StepIndicator({ step }: { step: number }) {
     { label: "Review + Export", step: 4 },
   ];
   return (
-    <div className="flex max-w-full flex-wrap gap-2">
+    <ol className="flex max-w-full flex-wrap gap-2" aria-label="Resume workflow">
       {stages.map((stage, index) => {
         const complete = step > stage.step;
         const active = step === stage.step;
         return (
-        <div
+        <li
+          aria-current={active ? "step" : undefined}
           key={stage.label}
           className={[
             "rounded border px-3 py-1 text-xs font-semibold",
@@ -114,10 +118,10 @@ function StepIndicator({ step }: { step: number }) {
                 : "border-slate-200 bg-white text-slate-500",
           ].join(" ")}
         >
-          {index + 1}. {stage.label}
-        </div>
+          {complete ? "✓ " : `${index + 1}. `}{stage.label}
+        </li>
       );})}
-    </div>
+    </ol>
   );
 }
 
@@ -386,12 +390,6 @@ function baseResumeFactIds(base: ResumeVersion | null) {
     : [];
 }
 
-function baseResumeCareerItemIds(base: ResumeVersion | null) {
-  return base
-    ? unique([...base.contentJson.projects, ...base.contentJson.experience].map((section) => section.careerItemId))
-    : [];
-}
-
 function BaseResumePanel({
   resumes,
   selectedBaseId,
@@ -565,10 +563,11 @@ function ResumeSourcePanel({
   );
 }
 
-export function TailorResumePage() {
+export function TailorResumePage({ embedded = false, jobId: workspaceJobId }: { embedded?: boolean; jobId?: string } = {}) {
   const repository = useRepository();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
+  const selectedJobId = workspaceJobId ?? searchParams.get("jobId");
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
   const [analysis, setAnalysis] = useState<JobAnalysis | null>(null);
@@ -576,7 +575,9 @@ export function TailorResumePage() {
   const [jobPersisted, setJobPersisted] = useState(false);
   const [applicationSaved, setApplicationSaved] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const [changesReviewed, setChangesReviewed] = useState(false);
   const [savedResume, setSavedResume] = useState<ResumeVersion | null>(null);
+  const [availableStoredResume, setAvailableStoredResume] = useState<ResumeVersion | null>(null);
   const [baseResumeId, setBaseResumeId] = useState("");
   const [baseConfirmed, setBaseConfirmed] = useState(false);
   const [creatingMaster, setCreatingMaster] = useState(false);
@@ -624,22 +625,50 @@ export function TailorResumePage() {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => repository.getSettings() });
   const resumeVersionsQuery = useQuery({ queryKey: ["resume-versions"], queryFn: () => repository.listResumeVersions() });
 
+  const openStoredResume = (version: ResumeVersion) => {
+    const current = useResumeEditorStore.getState();
+    if (current.dirty && current.resume?.id !== version.contentJson.id && !window.confirm("Replace the unsaved resume draft with this saved version? Save your current draft first to keep those edits.")) return;
+    if (!current.dirty || current.resume?.id !== version.contentJson.id) {
+      setReviewDraft(version.contentJson, version.deterministicBaselineJson ?? version.contentJson);
+    }
+    setSavedResume(version);
+    setGenerationMetadata(version.generationMetadataJson);
+    setCalls(version.generationMetadataJson.calls);
+    setBaseResumeId(version.baseResumeVersionId);
+    setBaseConfirmed(Boolean(version.baseResumeVersionId));
+    setStep(4);
+  };
+
   useEffect(() => {
-    const jobId = searchParams.get("jobId");
+    const jobId = selectedJobId;
     if (!jobId) return;
     let active = true;
-    void repository.getJob(jobId).then((savedJob) => {
+    void Promise.all([repository.getJob(jobId), embedded ? repository.listResumeVersions() : Promise.resolve([])]).then(([savedJob, versions]) => {
       if (!active || !savedJob) return;
       form.reset({ company: savedJob.company, roleTitle: savedJob.roleTitle, sourceUrl: savedJob.applicationUrl || savedJob.sourceUrl, rawDescription: savedJob.descriptionText || savedJob.rawDescription });
+      setJob(savedJob);
       if (savedJob.analysisJson) {
-        setJob(savedJob);
         setAnalysis(savedJob.analysisJson);
         setJobPersisted(true);
         setStep(2);
+        const latest = versions.find((version) => version.jobId === jobId && version.kind !== "master");
+        if (latest) {
+          setAvailableStoredResume(latest);
+          const current = useResumeEditorStore.getState();
+          if (!current.dirty || current.resume?.id === latest.contentJson.id) {
+            if (!current.dirty) current.setReviewDraft(latest.contentJson, latest.deterministicBaselineJson ?? latest.contentJson);
+            setSavedResume(latest);
+            setGenerationMetadata(latest.generationMetadataJson);
+            setCalls(latest.generationMetadataJson.calls);
+            setBaseResumeId(latest.baseResumeVersionId);
+            setBaseConfirmed(Boolean(latest.baseResumeVersionId));
+            setStep(4);
+          }
+        }
       }
-    });
+    }).catch(() => { if (active) setError("This job’s saved workspace could not be loaded. Try reopening it."); });
     return () => { active = false; };
-  }, [form, repository, searchParams]);
+  }, [form, repository, selectedJobId, embedded]);
 
   useEffect(() => {
     if (settingsQuery.data && !controlsLoaded) {
@@ -666,15 +695,27 @@ export function TailorResumePage() {
         modelName: settings.modelName,
       });
       const timestamp = nowIso();
+      const existingJob = selectedJobId ? await repository.getJob(selectedJobId) : null;
       const analyzedJob: Job = {
-        id: createId("job"),
+        id: existingJob?.id ?? createId("job"),
         company: values.company || result.data.inferredCompany,
         roleTitle: values.roleTitle || result.data.inferredRoleTitle,
         sourceUrl: values.sourceUrl,
         rawDescription: values.rawDescription,
         analysisJson: result.data,
         ...legacyJobAutomationFields({ roleTitle: values.roleTitle || result.data.inferredRoleTitle, rawDescription: values.rawDescription, sourceUrl: values.sourceUrl, timestamp }),
-        createdAt: timestamp,
+        ...(existingJob ? {
+          sourceId: existingJob.sourceId, externalId: existingJob.externalId,
+          location: existingJob.location, normalizedLocation: existingJob.normalizedLocation,
+          workplaceType: existingJob.workplaceType, employmentType: existingJob.employmentType,
+          department: existingJob.department, salaryMin: existingJob.salaryMin, salaryMax: existingJob.salaryMax,
+          salaryCurrency: existingJob.salaryCurrency, salaryInterval: existingJob.salaryInterval,
+          postedAt: existingJob.postedAt, discoveredAt: existingJob.discoveredAt,
+          applicationUrl: existingJob.applicationUrl || values.sourceUrl,
+          canonicalUrl: existingJob.canonicalUrl, sourcePayloadJson: existingJob.sourcePayloadJson,
+          status: existingJob.status,
+        } : {}),
+        createdAt: existingJob?.createdAt ?? timestamp,
         updatedAt: timestamp,
       };
       return { analysis: result.data, analyzedJob, metadata: result.metadata };
@@ -742,7 +783,7 @@ export function TailorResumePage() {
         .flatMap((section) => section.bullets)
         .some((bullet) => bullet.included && !bullet.approved)
     : false;
-  const exportBlockReason = missingContactFields.length
+  const exportBlockReason = !savedResume ? "Save the reviewed child before exporting its PDF." : missingContactFields.length
     ? `Complete profile fields before export: ${missingContactFields.join(", ")}.`
     : hasBlockingIssues
       ? "Resolve blocking validation errors before exporting."
@@ -795,7 +836,7 @@ export function TailorResumePage() {
     baseResume: ResumeVersion,
   ) => {
     if (!job || !settings || !analysis) throw new Error("Job context is unavailable.");
-    const saved = await repository.saveResumeVersion({
+    const saved = await saveReviewedTailoredChild(repository, baseResume, {
       jobId: job.id,
       name: `${job.company || analysis.inferredCompany} - ${job.roleTitle || analysis.inferredRoleTitle}`,
       kind: "tailored",
@@ -813,7 +854,7 @@ export function TailorResumePage() {
       templateSettingsJson: baseResume.templateSettingsJson,
       generationMetadataJson: metadata,
       deterministicBaselineJson: baseline,
-    });
+    }, changesReviewed);
     setSavedResume(saved);
     markSaved();
     queryClient.invalidateQueries();
@@ -821,6 +862,10 @@ export function TailorResumePage() {
 
   const saveJobAndContinue = async () => {
     if (!job) return;
+    if (jobPersisted) {
+      setStep(3);
+      return;
+    }
     try {
       const saved = await repository.saveJob(job);
       setJob(saved);
@@ -905,7 +950,7 @@ export function TailorResumePage() {
       ]);
       const lockedCareerItemIds = unique([
         ...controls.lockedCareerItemIds,
-        ...baseResumeCareerItemIds(confirmedBaseResume),
+        ...confirmedBaseResume.contentJson.projects.concat(confirmedBaseResume.contentJson.experience).filter(section => section.locked).map(section => section.careerItemId),
       ]);
       const baseAwareControls: TailoringControls = {
         ...controls,
@@ -935,10 +980,7 @@ export function TailorResumePage() {
       setGenerationPlan(generated.plan);
       setGenerationMetadata(generated.metadata);
       setCalls((current) => [...current, ...generated.metadata.calls]);
-      const variant = createControlledResumeVariantFromBase({
-        base: confirmedBaseResume.contentJson,
-        proposed: generated.resume,
-      });
+      const variant = { variant: createJobSpecificVariant(confirmedBaseResume.contentJson, generated.resume) };
       const issues = validateResumeClaims({
         resume: variant.variant,
         facts,
@@ -947,14 +989,10 @@ export function TailorResumePage() {
         profile,
         generationRequest: request,
       });
-      setReviewDraft(variant.variant, confirmedBaseResume.contentJson);
-      await saveGeneratedVersion(
-        variant.variant,
-        issues,
-        confirmedBaseResume.contentJson,
-        generated.metadata,
-        confirmedBaseResume,
-      );
+      setReviewDraft(variant.variant, confirmedBaseResume.contentJson, true);
+      if (hasBlockingValidationErrors(issues)) throw new Error("Generated content failed evidence validation. No child was saved.");
+      setSavedResume(null);
+      setChangesReviewed(false);
       setStep(4);
     } catch (caught) {
       if (caught instanceof AIProviderError) setCalls((current) => [...current, caught.metadata]);
@@ -968,10 +1006,7 @@ export function TailorResumePage() {
     if (!generationRequest || !profile || !job || !settings || !confirmedBaseResume) return;
     const plan = createResumePlanFromRequest(generationRequest);
     const fallback = deterministicFallback(generationRequest, plan);
-    const variant = createControlledResumeVariantFromBase({
-      base: confirmedBaseResume.contentJson,
-      proposed: fallback,
-    });
+    const variant = { variant: createJobSpecificVariant(confirmedBaseResume.contentJson, fallback) };
     const issues = validateResumeClaims({
       resume: variant.variant,
       facts,
@@ -989,8 +1024,10 @@ export function TailorResumePage() {
     };
     setGenerationPlan(plan);
     setGenerationMetadata(metadata);
-    setReviewDraft(variant.variant, confirmedBaseResume.contentJson);
-    await saveGeneratedVersion(variant.variant, issues, confirmedBaseResume.contentJson, metadata, confirmedBaseResume);
+    setReviewDraft(variant.variant, confirmedBaseResume.contentJson, true);
+    if (hasBlockingValidationErrors(issues)) { setError("Fallback failed evidence validation. No child was saved."); return; }
+    setSavedResume(null);
+    setChangesReviewed(false);
     setError("");
     setStep(4);
   };
@@ -1000,7 +1037,13 @@ export function TailorResumePage() {
     exportPath?: string,
     contentOverride?: NonNullable<typeof resume>,
   ) => {
-    if (!resume || !job || !savedResume || !generationMetadata) return;
+    if (!resume || !job || !generationMetadata) return;
+    if (!savedResume) {
+      if (!confirmedBaseResume || !changesReviewed) { setError("Review and confirm the changes before creating the child."); return; }
+      try { await saveGeneratedVersion(resume, validationIssues, confirmedBaseResume.contentJson, generationMetadata, confirmedBaseResume); setError(""); }
+      catch (error) { setError(error instanceof Error ? error.message : "The reviewed child could not be saved."); }
+      return;
+    }
     const content = contentOverride ?? resume;
     const currentIssues = validateResumeClaims({
       resume: content,
@@ -1114,7 +1157,7 @@ export function TailorResumePage() {
   };
 
   const exportResume = async () => {
-    if (!resume || !profile || !job || !settings) return;
+    if (!resume || !profile || !job || !settings || !savedResume) return;
     if (missingContactFields.length) {
       setError(`Complete the profile before export: ${missingContactFields.join(", ")}.`);
       return;
@@ -1192,6 +1235,7 @@ export function TailorResumePage() {
 
   return (
     <div>
+      {!embedded ? (
       <PageHeader
         eyebrow="Evidence-grounded workflow"
         title="Tailor Resume"
@@ -1205,7 +1249,33 @@ export function TailorResumePage() {
         }
         actions={<StepIndicator step={step} />}
       />
-      <div className="page-body space-y-5">
+      ) : null}
+      <div className={embedded ? "workspace-content space-y-5" : "page-body space-y-5"}>
+        <section className="panel flex flex-wrap items-center justify-between gap-4 p-4" aria-label="Current step">
+          <div>
+            <p className="text-xs font-semibold text-blue-800">Step {step} of 4</p>
+            <p className="mt-1 text-sm font-semibold text-slate-950">{[
+              "Start with the job you want",
+              "Check what this role needs",
+              "Choose the facts and base resume to use",
+              "Review your draft, then export",
+            ][step - 1]}</p>
+            <p className="mt-1 text-sm leading-6 text-slate-600">{[
+              "Paste the full description below. Company, role, and URL are optional.",
+              "Check the detected skills, then continue to select supporting evidence.",
+              "Confirm a base resume and select supporting facts before creating a variant.",
+              "Approve the bullets you want to keep and resolve validation issues before exporting.",
+            ][step - 1]}</p>
+          </div>
+          {step < 4 && availableStoredResume ? <button className="button" type="button" onClick={() => openStoredResume(availableStoredResume)}>Open saved draft</button> : null}
+          {step > 1 && (step !== 2 || !jobPersisted) ? (
+            <button className="button" type="button" disabled={generating} onClick={() => { setError(""); setStep(step - 1); }}>
+              <ArrowLeft size={15} aria-hidden="true" />
+              {step === 2 ? "Edit job description" : step === 3 ? "Back to analysis" : "Back to evidence"}
+            </button>
+          ) : null}
+          {step < 4 && resume && analysis && savedResume?.jobId === job?.id && generationRequest ? <button className="button" type="button" onClick={() => setStep(4)} disabled={generating}>Return to draft</button> : null}
+        </section>
         {error ? (
           <div className="space-y-2">
             <InlineError message={error} />
@@ -1221,6 +1291,11 @@ export function TailorResumePage() {
         ) : null}
 
         {step < 4 ? (
+          <details className="panel p-4">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+              Profile & resume source <span className="ml-2 font-normal text-slate-600">{missingContactFields.length ? `${missingContactFields.length} contact fields needed for export` : "Contact details ready"}</span>
+            </summary>
+            <div className="mt-4">
           <ResumeSourcePanel
             profile={profile}
             items={items}
@@ -1229,16 +1304,18 @@ export function TailorResumePage() {
             latestResume={latestResume}
             missingContactFields={missingContactFields}
           />
+            </div>
+          </details>
         ) : null}
 
         {step === 1 ? (
-          <form className="panel space-y-4 p-5" onSubmit={form.handleSubmit((values) => analyzeMutation.mutate(values))}>
+          <form className="panel space-y-4 p-5" aria-busy={analyzeMutation.isPending} onSubmit={form.handleSubmit((values) => analyzeMutation.mutate(values))}>
             <div className="grid gap-3 md:grid-cols-3">
               <label className="text-sm font-semibold text-slate-700">Company<input className="field mt-1" {...form.register("company")} /></label>
               <label className="text-sm font-semibold text-slate-700">Role title<input className="field mt-1" {...form.register("roleTitle")} /></label>
               <label className="text-sm font-semibold text-slate-700">Job URL<input className="field mt-1" {...form.register("sourceUrl")} /></label>
             </div>
-            <label className="block text-sm font-semibold text-slate-700">Full job description<textarea className="field mt-1 min-h-72" {...form.register("rawDescription")} /></label>
+            <label className="block text-sm font-semibold text-slate-700">Full job description<textarea aria-invalid={Boolean(form.formState.errors.rawDescription)} aria-describedby="job-description-help" className="field job-description-field mt-1" placeholder="Paste the responsibilities, requirements, and company information here…" {...form.register("rawDescription")} /></label>
             {form.formState.errors.rawDescription ? <p className="text-sm font-semibold text-red-700">{form.formState.errors.rawDescription.message}</p> : null}
             <div className="flex flex-wrap gap-2">
               <button
@@ -1270,14 +1347,14 @@ export function TailorResumePage() {
               >
                 Use sample job
               </button>
-              <button className="button button-primary" type="submit" disabled={analyzeMutation.isPending}><Sparkles size={16} />Analyze job</button>
+              <button className="button button-primary" type="submit" disabled={analyzeMutation.isPending}><Sparkles size={16} aria-hidden="true" />{analyzeMutation.isPending ? "Analyzing job…" : settings?.aiProvider === "openai" ? "Analyze job (paid OpenAI request)" : "Analyze job"}</button>
             </div>
-            <p className="text-xs text-slate-500">Clipboard text stays in this draft until you explicitly save the analyzed job.</p>
+            <p id="job-description-help" className="text-xs text-slate-500">Clipboard text stays in this draft until you explicitly save the analyzed job.</p>
           </form>
         ) : null}
 
         {step === 2 && analysis ? (
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className={embedded ? "resume-evidence-layout" : "grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]"}>
             <section className="panel p-5">
               <h3 className="text-lg font-semibold text-slate-950">Job analysis</h3>
               <p className="mt-2 text-sm leading-6 text-slate-700">{analysis.summary}</p>
@@ -1291,22 +1368,21 @@ export function TailorResumePage() {
               <p className="mt-1 text-sm text-slate-600">{settings?.aiProvider ?? "mock"} | {settings?.modelName}</p>
               <p className="mt-4 text-sm font-semibold text-slate-950">Detected role profile</p>
               <p className="mt-1 text-sm text-slate-600">{ROLE_PROFILES[controls.roleProfileId].name}</p>
-              <div className="mt-3"><ControlsPanel controls={controls} onChange={setControls} /></div>
+              <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">Adjust tailoring options</summary><div className="mt-3"><ControlsPanel controls={controls} onChange={setControls} /></div></details>
               <button
                 className="button button-primary mt-5 w-full"
                 type="button"
-                disabled={jobPersisted}
                 onClick={() => void saveJobAndContinue()}
               >
                 <Save size={15} aria-hidden="true" />
-                {jobPersisted ? "Job saved" : "Save job and score evidence"}
+                {jobPersisted ? "Continue to evidence" : "Save job and score evidence"}
               </button>
             </aside>
           </div>
         ) : null}
 
         {step === 3 && analysis ? (
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className={embedded ? "resume-evidence-layout" : "grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]"}>
             <section><EvidenceTable evidence={evidence} overrides={overrides} controls={controls} onToggle={(factId, included) => setOverrides((current) => ({ ...current, [factId]: included }))} onControls={setControls} /></section>
             <aside className="h-fit space-y-4">
               <BaseResumePanel
@@ -1326,7 +1402,7 @@ export function TailorResumePage() {
               />
               <div className="panel p-5">
                 <h3 className="text-lg font-semibold text-slate-950">Tailoring controls</h3>
-                <div className="mt-4"><ControlsPanel controls={controls} onChange={setControls} /></div>
+                <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">Adjust tailoring options</summary><div className="mt-3"><ControlsPanel controls={controls} onChange={setControls} /></div></details>
                 <p className="mt-4 text-sm text-slate-600">{selectedEvidence.length} facts selected from {evidence.length} ranked facts.</p>
                 <button className="button mt-3 w-full" type="button" onClick={() => setOverrides({})}>
                   Use recommended evidence
@@ -1336,17 +1412,21 @@ export function TailorResumePage() {
                   type="button"
                   onClick={() => void generateResume()}
                   disabled={selectedEvidence.length === 0 || generating || !confirmedBaseResume}
+                  aria-describedby="generation-next-step"
                   title={!confirmedBaseResume ? "Confirm a base resume before generating." : undefined}
                 >
                   <Sparkles size={15} />{generating ? "Generating..." : "Create tailored variant"}
                 </button>
+                <p id="generation-next-step" role="status" className="mt-3 text-xs leading-5 text-slate-600">
+                  {generating ? "Creating your draft. You can review every bullet when it is ready." : !confirmedBaseResume ? "Next: choose a base resume above and click Confirm base resume." : selectedEvidence.length === 0 ? "Next: select at least one evidence fact from the table." : settings?.aiProvider === "openai" ? "Creating a variant starts a paid OpenAI request using the selected evidence." : "Ready to create a draft using your selected evidence."}
+                </p>
               </div>
             </aside>
           </div>
         ) : null}
 
         {step === 4 && resume && profile && analysis ? (
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,620px)]">
+          <div className={embedded ? "resume-review-layout" : "grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(420px,620px)]"}>
             <section className="space-y-4">
               <div className="panel flex flex-wrap items-center gap-2 p-4">
                 <div className="mr-auto">
@@ -1355,11 +1435,12 @@ export function TailorResumePage() {
                     {savedResume ? `Saved as ${savedResume.name}` : "Draft not saved"}{dirty ? " | unsaved edits" : ""}
                   </p>
                 </div>
+                {!savedResume ? <label className="text-sm"><input type="checkbox" checked={changesReviewed} onChange={e => setChangesReviewed(e.target.checked)} /> I reviewed the content and ordering changes for this job.</label> : null}
                 <button className="button" type="button" onClick={acceptAll}><Check size={15} />Accept all</button>
                 <button className="button" type="button" onClick={undo} disabled={!history.length}><Undo2 size={15} />Undo</button>
                 <button className="icon-button" type="button" title="Redo" onClick={redo} disabled={!future.length}><Redo2 size={15} aria-hidden="true" /></button>
                 <button className="button" type="button" onClick={() => void fitResume()}>Fit one page</button>
-                <button className="button" type="button" onClick={() => void persistCurrent()}><Save size={15} />Save draft</button>
+                <button className="button" type="button" onClick={() => void persistCurrent()}><Save size={15} />{savedResume ? "Save draft" : "Save reviewed child"}</button>
                 <button
                   className="button button-primary"
                   type="button"
@@ -1370,7 +1451,7 @@ export function TailorResumePage() {
                   <FileDown size={15} />
                   Export PDF
                 </button>
-                <button className="button" type="button" onClick={() => void saveApplicationRecord()} disabled={applicationSaved}>
+                <button className="button" type="button" onClick={() => void saveApplicationRecord()} disabled={applicationSaved || !savedResume}>
                   <Save size={15} aria-hidden="true" />
                   {applicationSaved ? "Application saved" : "Save application"}
                 </button>
@@ -1390,8 +1471,7 @@ export function TailorResumePage() {
                 </div>
               ) : <div className="panel p-4 text-sm font-semibold text-emerald-700">No unapproved validation issues.</div>}
 
-              <QualityPanel checks={quality} />
-              <UsagePanel calls={calls} />
+              <details className="panel p-4"><summary className="cursor-pointer text-sm font-semibold text-slate-700">Quality checks and request history</summary><div className="mt-4 space-y-3"><QualityPanel checks={quality} /><UsagePanel calls={calls} /></div></details>
 
               <div className="panel p-4">
                 <h4 className="font-semibold text-slate-950">Before-and-after diff from base resume</h4>
@@ -1467,7 +1547,7 @@ export function TailorResumePage() {
                 </div>
               ))}
             </section>
-            <aside className="order-first space-y-4 xl:order-none xl:sticky xl:top-0 xl:max-h-screen xl:overflow-auto">
+            <aside className={embedded ? "resume-document-preview space-y-4" : "order-first space-y-4 xl:order-none xl:sticky xl:top-0 xl:max-h-screen xl:overflow-auto"}>
               <PageSection title="Resume preview" description="This is the current draft that will be saved or exported after review.">
                 <div className="overflow-auto bg-slate-100 p-3">
                   <Suspense fallback={<LoadingState label="Loading resume preview..." />}>

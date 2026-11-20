@@ -1,3 +1,6 @@
+import { ResumeFileInput } from "./ResumeFileInput";
+import { proposeResumeIntake } from "../../lib/import/resumeIntake";
+import type { ExtractedResume } from "../../lib/import/resumeDocument";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -181,6 +184,7 @@ export function SmartCareerIntake({
   const queryClient = useQueryClient();
   const [mode, setMode] = useState<CareerImportSourceType>("paste_anything");
   const [sourceText, setSourceText] = useState("");
+  const [documentSource, setDocumentSource] = useState<ExtractedResume | null>(null);
   const [sourceTitle, setSourceTitle] = useState("");
   const [proposal, setProposal] = useState<CareerImportProposal | null>(null);
   const [editingId, setEditingId] = useState("");
@@ -201,6 +205,7 @@ export function SmartCareerIntake({
       setStatus(`Saved ${record.approvedCount} approved changes.`);
       setProposal(null);
       setSourceText("");
+      setDocumentSource(null);
       await queryClient.invalidateQueries();
       await onDone();
     },
@@ -237,7 +242,7 @@ export function SmartCareerIntake({
   if (!settings) return <LoadingState label="Loading intake..." />;
   const latestImport = (importsQuery.data ?? []).find((record) => !record.undoneAt);
   const usesOpenAIExtraction =
-    settings.aiProvider === "openai" && mode !== "structured_package" && mode !== "guided_interview";
+    !documentSource && settings.aiProvider === "openai" && mode !== "structured_package" && mode !== "guided_interview";
   const readyToSave = proposal
     ? (() => {
         try {
@@ -255,6 +260,11 @@ export function SmartCareerIntake({
     setStatus("");
     setIsExtracting(true);
     try {
+      if (documentSource) {
+        setProposal(prepareCareerImportProposal(proposeResumeIntake(sourceText, documentSource.sourceReference), context));
+        setStatus("Local résumé proposals are ready. Review every detected field; document claims are not independently verified.");
+        return;
+      }
       if (mode === "structured_package") {
         setStatus("Parsing structured package...");
         const parsed = parseCareerImportPackageText(sourceText);
@@ -450,10 +460,12 @@ export function SmartCareerIntake({
         </>
       }
     >
+      <ResumeFileInput disabled={isExtracting || applyImport.isPending} onExtracted={value => { setDocumentSource(value); setSourceText(value.text); setSourceTitle(`Imported ${value.format.toUpperCase()} résumé`); setMode("resume_text"); setProposal(null); setError(""); setStatus("Your résumé text was extracted locally. Correct its reading order, then review detected experience and skills before saving."); }} />
+      {documentSource ? <section className="workspace-note"><h3>Local document review</h3>{documentSource.warnings.map(w => <p key={w}>{w}</p>)}<p>Remote extraction is disabled for this imported document. Only accepted records and source digests are saved; keep your original file.</p><details><summary>Original extracted text</summary><pre className="whitespace-pre-wrap break-words">{documentSource.text}</pre></details><button className="button" disabled={isExtracting} onClick={() => { setDocumentSource(null); setSourceText(""); setSourceTitle(""); setProposal(null); }}>Discard imported text</button></section> : null}
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div>
           <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-            {["Paste or upload", "Extract proposals", "Review categories", "Resolve issues", "Save approved"].map((step, index) => (
+            {["Paste text", "Extract proposals", "Review categories", "Resolve issues", "Save approved"].map((step, index) => (
               <Badge key={step} tone={proposal ? (index < 2 ? "emerald" : "blue") : index === 0 ? "blue" : "slate"}>
                 {index + 1}. {step}
               </Badge>
@@ -476,9 +488,10 @@ export function SmartCareerIntake({
       <div className="mt-5 grid gap-3 md:grid-cols-[220px_minmax(0,1fr)]">
         <select
           className="field"
+          aria-label="Input format"
           value={mode}
           onChange={(event) => setMode(event.target.value as CareerImportSourceType)}
-          disabled={isExtracting}
+          disabled={isExtracting || Boolean(documentSource)}
         >
           {modes.map((item) => (
             <option key={item.id} value={item.id}>
@@ -488,6 +501,7 @@ export function SmartCareerIntake({
         </select>
         <input
           className="field"
+          aria-label="Source title or reference"
           value={sourceTitle}
           placeholder="Source title or reference"
           onChange={(event) => setSourceTitle(event.target.value)}
@@ -507,13 +521,14 @@ export function SmartCareerIntake({
 
       <textarea
         className="field mt-3 min-h-44"
+        aria-label="Career information"
         value={sourceText}
         placeholder={
           mode === "structured_package"
             ? "Paste a CareerCompiler import package JSON"
             : "Paste career information, project notes, resume text, or interview answers"
         }
-        onChange={(event) => setSourceText(event.target.value)}
+        onChange={(event) => { setSourceText(event.target.value); if (documentSource) setProposal(null); }}
         disabled={isExtracting}
       />
       <div className="mt-3 flex flex-wrap gap-2">
@@ -555,6 +570,7 @@ export function SmartCareerIntake({
           </button>
         ) : null}
       </div>
+      {!usesOpenAIExtraction ? <p className="field-hint">Local extraction recognizes a limited text structure. Review every fact; it does not reconstruct a complete résumé or preserve document layout.</p> : null}
       {error ? <InlineError message={error} /> : null}
       {status ? <p className="mt-3 text-sm font-semibold text-blue-800">{status}</p> : null}
 
