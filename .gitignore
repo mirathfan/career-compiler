@@ -63,3 +63,14 @@ docs/ui-ux-overhaul/**/*.png
 *.njsproj
 *.sln
 *.sw?
+
+# Local agent coordination and acceptance captures
+.codex-phase*
+.codex-relay-checkpoint.json
+docs/*-evidence/
+
+# Owner-specific resume review data and one-off processing helpers
+docs/CAREERCOMPILER_REAL_OWNER_ACCEPTANCE_REPORT.md
+docs/CAREERCOMPILER_OWNER_IMPORT_REPAIR_REPORT.md
+scripts/prepare-owner-import-review.mjs
+scripts/verify-owner-resume-import.mjs
