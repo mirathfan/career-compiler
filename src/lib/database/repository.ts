@@ -56,7 +56,11 @@ export interface ApprovedVariantFilters {
   careerItemId?: string;
 }
 
+export interface SafetyRecord { id: string; kind: string; value: Record<string, unknown>; createdAt: string }
 export interface AppRepository {
+  transaction<T>(work: (repository: AppRepository) => Promise<T>): Promise<T>;
+  listSafetyRecords(kind: string): Promise<SafetyRecord[]>;
+  saveSafetyRecord(record: SafetyRecord): Promise<void>;
   initialize(): Promise<void>;
   seedSampleData(): Promise<{ inserted: number; updated: number }>;
   resetSampleData(): Promise<void>;
@@ -115,6 +119,8 @@ export interface AppRepository {
   saveJobAutomationRun(run: JobAutomationRun): Promise<JobAutomationRun>;
   saveJobDuplicateEvent(event: JobDuplicateEvent): Promise<JobDuplicateEvent>;
   saveJobMatchHistory(history: JobMatchHistory): Promise<JobMatchHistory>;
+  listJobMatchHistory(jobId?: string): Promise<JobMatchHistory[]>;
+  supportsStandaloneMaster(): Promise<boolean>;
   listResumeVersions(): Promise<ResumeVersion[]>;
   getResumeVersion(id: string): Promise<ResumeVersion | null>;
   saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">): Promise<ResumeVersion>;

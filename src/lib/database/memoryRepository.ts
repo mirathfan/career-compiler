@@ -1,3 +1,12 @@
+import { applyResumeBulletAction } from "../copilot/resumeBulletActions";
+import { RESUME_BULLET_ACTION, RESUME_BULLET_AUDIT } from "../copilot/resumeBulletContract";
+import { applyApplicationNextAction } from "../copilot/applicationNextAction";
+import { APPLICATION_NEXT_ACTION, APPLICATION_NEXT_ACTION_AUDIT } from "../copilot/applicationActionContract";
+import { applyProfileSkillAction, PROFILE_SKILL_AUDIT } from "../copilot/profileSkillActions";
+import { PROFILE_SKILL_ACTION } from "../copilot/profileSkillContract";
+import { validateCopilotAction } from "../copilot/actionReview";
+import { reconcileEvidenceFreshness, reconcileEvidencePackages } from "../job-automation/evidenceFreshness";
+import { jobFingerprint, invalidateJobDependents, invalidateResumeDependents, synchronizePackageSelection, recordPackageRevision, validateTrackerSelection } from "../job-automation/safety";
 import type {
   AppSettings,
   ApplicationFieldRecord,
@@ -65,6 +74,7 @@ import { defaultSettings, seedCareerFacts, seedCareerItems, seedProfile, seedSki
 import type { AppRepository, ApprovedVariantFilters, CareerFactFilters } from "./repository";
 
 interface MemoryState {
+  safetyRecords: import("./repository").SafetyRecord[];
   profile: Profile | null;
   careerItems: CareerItem[];
   careerFacts: CareerFact[];
@@ -105,6 +115,7 @@ interface MemoryState {
 
 function emptyState(): MemoryState {
   return {
+    safetyRecords: [],
     profile: null,
     careerItems: [],
     careerFacts: [],
@@ -232,6 +243,32 @@ function normalizeMemoryJob(job: Job): Job {
   };
 }
 
+function normalizeAutomationRun(run: JobAutomationRun): JobAutomationRun {
+  return {
+    ...run,
+    summary: {
+      message: run.summary?.message ?? "",
+      highMatchJobIds: run.summary?.highMatchJobIds ?? [],
+      sourceFailureCount: run.summary?.sourceFailureCount ?? 0,
+      aiMetrics: {
+        eligible: run.summary?.aiMetrics?.eligible ?? 0,
+        approvalsRequested: run.summary?.aiMetrics?.approvalsRequested ?? 0,
+        started: run.summary?.aiMetrics?.started ?? 0,
+        valid: run.summary?.aiMetrics?.valid ?? 0,
+        repaired: run.summary?.aiMetrics?.repaired ?? 0,
+        failed: run.summary?.aiMetrics?.failed ?? 0,
+        skippedCap: run.summary?.aiMetrics?.skippedCap ?? 0,
+        skippedUnchanged: run.summary?.aiMetrics?.skippedUnchanged ?? 0,
+        resumeQueued: run.summary?.aiMetrics?.resumeQueued ?? 0,
+        resumeCompleted: run.summary?.aiMetrics?.resumeCompleted ?? 0,
+        resumeFailed: run.summary?.aiMetrics?.resumeFailed ?? 0,
+        resumeSkippedCap: run.summary?.aiMetrics?.resumeSkippedCap ?? 0,
+        packagesAwaitingApproval: run.summary?.aiMetrics?.packagesAwaitingApproval ?? 0,
+      },
+    },
+  };
+}
+
 export class MemoryRepository implements AppRepository {
   private state: MemoryState;
   private readonly persistKey?: string;
@@ -239,6 +276,27 @@ export class MemoryRepository implements AppRepository {
   constructor(initial?: Partial<MemoryState>, persistKey?: string) {
     this.persistKey = persistKey;
     this.state = { ...emptyState(), ...clone(initial ?? {}) };
+  }
+
+  private inTransaction = false;
+  private transactionTail: Promise<unknown> = Promise.resolve();
+  transaction<T>(work: (repository: AppRepository) => Promise<T>): Promise<T> {
+    const execute = async () => {
+      const snapshot = clone(this.state);
+      // A separate facade marks nested work and keeps injected failures visible.
+      const facade = Object.create(this) as MemoryRepository;
+      facade.state = clone(this.state); facade.inTransaction = true;
+      facade.transaction = (nested) => nested(facade);
+      try { const result = await work(facade); this.state = facade.state; this.persist(); return result; }
+      catch (error) { this.state = snapshot; throw error; }
+    };
+    const result = this.transactionTail.then(execute, execute);
+    this.transactionTail = result.catch(() => {}); return result;
+  }
+  async listSafetyRecords(kind: string) { return clone(this.state.safetyRecords.filter((record) => record.kind === kind)); }
+  async saveSafetyRecord(record: import("./repository").SafetyRecord) {
+    if (["package_audit", PROFILE_SKILL_AUDIT, APPLICATION_NEXT_ACTION_AUDIT, RESUME_BULLET_AUDIT].includes(record.kind) && this.state.safetyRecords.some((item) => item.kind === record.kind && item.id === record.id)) throw new Error("Audit records are immutable.");
+    this.state.safetyRecords = [...this.state.safetyRecords.filter((item) => item.kind !== record.kind || item.id !== record.id), clone(record)]; this.persist();
   }
 
   async initialize() {
@@ -262,7 +320,7 @@ export class MemoryRepository implements AppRepository {
         jobSearchPreferences: stored.jobSearchPreferences ?? null,
         applicationPackages: stored.applicationPackages ?? [],
         applicationAnswerVault: stored.applicationAnswerVault ?? [],
-        jobAutomationRuns: stored.jobAutomationRuns ?? [],
+        jobAutomationRuns: (stored.jobAutomationRuns ?? []).map(normalizeAutomationRun),
         jobDuplicateEvents: stored.jobDuplicateEvents ?? [],
         jobMatchHistory: stored.jobMatchHistory ?? [],
         jobs: (stored.jobs ?? []).map(normalizeMemoryJob),
@@ -410,6 +468,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveProfile(profile: Profile) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveProfile(profile));
     const saved = { ...profile, updatedAt: nowIso() };
     this.state.profile = clone(saved);
     this.persist();
@@ -425,6 +484,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveCareerItem(item: Partial<CareerItem> & Pick<CareerItem, "type" | "title">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveCareerItem(item));
     const now = nowIso();
     const existing = item.id
       ? this.state.careerItems.find((careerItem) => careerItem.id === item.id)
@@ -452,13 +512,18 @@ export class MemoryRepository implements AppRepository {
       saved,
     ];
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return clone(saved);
   }
 
   async deleteCareerItem(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteCareerItem(id));
     this.state.careerItems = this.state.careerItems.filter((item) => item.id !== id);
     this.state.careerFacts = this.state.careerFacts.filter((fact) => fact.careerItemId !== id);
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async updateCareerItemOrder(ids: string[]) {
@@ -494,6 +559,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveCareerFact(fact: Partial<CareerFact> & Pick<CareerFact, "careerItemId" | "statement">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveCareerFact(fact));
     const now = nowIso();
     const existing = fact.id
       ? this.state.careerFacts.find((careerFact) => careerFact.id === fact.id)
@@ -522,12 +588,17 @@ export class MemoryRepository implements AppRepository {
       saved,
     ];
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return clone(saved);
   }
 
   async deleteCareerFact(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteCareerFact(id));
     this.state.careerFacts = this.state.careerFacts.filter((fact) => fact.id !== id);
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async bulkUpdateCareerFacts(
@@ -546,6 +617,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveSkill(skill: Partial<Skill> & Pick<Skill, "name" | "category">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveSkill(skill));
     const existing = skill.id
       ? this.state.skills.find((item) => item.id === skill.id)
       : this.state.skills.find((item) => item.name.toLowerCase() === skill.name.toLowerCase());
@@ -558,12 +630,17 @@ export class MemoryRepository implements AppRepository {
     };
     this.state.skills = [...this.state.skills.filter((item) => item.id !== saved.id), saved];
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return clone(saved);
   }
 
   async deleteSkill(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteSkill(id));
     this.state.skills = this.state.skills.filter((skill) => skill.id !== id);
     this.persist();
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async listCandidateClaims() {
@@ -762,27 +839,29 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveJob(job: Partial<Job> & Pick<Job, "rawDescription">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveJob(job));
     const now = nowIso();
     const existing = job.id ? this.state.jobs.find((item) => item.id === job.id) : undefined;
     const saved: Job = {
+      notes: job.notes ?? existing?.notes ?? "",
       id: existing?.id ?? job.id ?? createId("job"),
       company: job.company ?? existing?.company ?? "",
       roleTitle: job.roleTitle ?? existing?.roleTitle ?? "",
       sourceUrl: job.sourceUrl ?? existing?.sourceUrl ?? "",
       rawDescription: job.rawDescription,
-      analysisJson: job.analysisJson ?? existing?.analysisJson ?? null,
+      analysisJson: job.analysisJson !== undefined ? job.analysisJson : existing?.analysisJson ?? null,
       sourceId: job.sourceId ?? existing?.sourceId ?? "",
       externalId: job.externalId ?? existing?.externalId ?? "",
       normalizedTitle: job.normalizedTitle ?? existing?.normalizedTitle ?? normalizeTitle(job.roleTitle ?? existing?.roleTitle ?? ""),
       descriptionHtml: job.descriptionHtml ?? existing?.descriptionHtml ?? "",
-      descriptionText: job.descriptionText ?? existing?.descriptionText ?? job.rawDescription,
+      descriptionText: job.descriptionText ?? (job.rawDescription !== existing?.rawDescription ? job.rawDescription : existing?.descriptionText ?? job.rawDescription),
       location: job.location ?? existing?.location ?? "",
       normalizedLocation: job.normalizedLocation ?? existing?.normalizedLocation ?? normalizeLocation(job.location ?? existing?.location ?? ""),
       workplaceType: job.workplaceType ?? existing?.workplaceType ?? "unspecified",
       employmentType: job.employmentType ?? existing?.employmentType ?? "",
       department: job.department ?? existing?.department ?? "",
-      salaryMin: job.salaryMin ?? existing?.salaryMin ?? null,
-      salaryMax: job.salaryMax ?? existing?.salaryMax ?? null,
+      salaryMin: job.salaryMin !== undefined ? job.salaryMin : existing?.salaryMin ?? null,
+      salaryMax: job.salaryMax !== undefined ? job.salaryMax : existing?.salaryMax ?? null,
       salaryCurrency: job.salaryCurrency ?? existing?.salaryCurrency ?? "",
       salaryInterval: job.salaryInterval ?? existing?.salaryInterval ?? "",
       postedAt: job.postedAt ?? existing?.postedAt ?? "",
@@ -798,8 +877,11 @@ export class MemoryRepository implements AppRepository {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
+    saved.contentHash = jobFingerprint(saved);
+    if (existing && jobFingerprint(existing) !== saved.contentHash) { saved.analysisJson = null; saved.changedSinceAnalysis = true; }
     this.state.jobs = [...this.state.jobs.filter((item) => item.id !== saved.id), saved];
     this.persist();
+    await invalidateJobDependents(this, existing, saved);
     return clone(saved);
   }
 
@@ -836,21 +918,25 @@ export class MemoryRepository implements AppRepository {
   }
 
   async listJobMatches() {
-    return clone([...this.state.jobMatches].sort((a, b) => b.combinedScore - a.combinedScore));
+    if (!this.inTransaction) return this.transaction(repository => repository.listJobMatches());
+    return reconcileEvidenceFreshness(this, clone([...this.state.jobMatches].sort((a, b) => b.combinedScore - a.combinedScore)));
   }
 
   async getJobMatch(jobId: string) {
-    return clone(this.state.jobMatches.find((match) => match.jobId === jobId) ?? null);
+    if (!this.inTransaction) return this.transaction(repository => repository.getJobMatch(jobId));
+    const match = clone(this.state.jobMatches.find((match) => match.jobId === jobId) ?? null);
+    return match ? (await reconcileEvidenceFreshness(this, [match]))[0] : null;
   }
 
   async saveJobMatch(match: Partial<JobMatch> & Pick<JobMatch, "jobId" | "deterministicScore" | "combinedScore">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveJobMatch(match));
     const now = nowIso();
     const existing = this.state.jobMatches.find((item) => item.jobId === match.jobId);
     const saved: JobMatch = {
       id: existing?.id ?? match.id ?? createId("job-match"),
       jobId: match.jobId,
       deterministicScore: match.deterministicScore,
-      aiScore: match.aiScore ?? existing?.aiScore ?? null,
+      aiScore: match.aiScore !== undefined ? match.aiScore : existing?.aiScore ?? null,
       combinedScore: match.combinedScore,
       scoreBreakdown: match.scoreBreakdown ?? existing?.scoreBreakdown ?? { title: 0, skills: 0, experience: 0, location: 0, projects: 0, recency: 0 },
       scoreReasons: match.scoreReasons ?? existing?.scoreReasons ?? [],
@@ -896,6 +982,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveApplicationPackage(applicationPackage: Partial<ApplicationPackage> & Pick<ApplicationPackage, "jobId">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveApplicationPackage(applicationPackage));
     const now = nowIso();
     const existing = this.state.applicationPackages.find((item) => item.jobId === applicationPackage.jobId);
     const saved: ApplicationPackage = {
@@ -910,12 +997,16 @@ export class MemoryRepository implements AppRepository {
       suggestedAnswers: applicationPackage.suggestedAnswers ?? existing?.suggestedAnswers ?? {},
       unresolvedQuestions: applicationPackage.unresolvedQuestions ?? existing?.unresolvedQuestions ?? [],
       generatedAt: applicationPackage.generatedAt ?? existing?.generatedAt ?? "",
-      approvedAt: applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
+      approvedAt: existing && applicationPackage.resumeVersionId !== undefined && applicationPackage.resumeVersionId !== existing.resumeVersionId
+        ? "" : applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
+    if (saved.validationStatus !== "valid" || (existing && JSON.stringify([existing.resumeVersionId,existing.coverLetterText,existing.suggestedAnswers,existing.selectedResumeProfile]) !== JSON.stringify([saved.resumeVersionId,saved.coverLetterText,saved.suggestedAnswers,saved.selectedResumeProfile]))) saved.approvedAt = "";
     this.state.applicationPackages = [...this.state.applicationPackages.filter((item) => item.jobId !== saved.jobId), saved];
     this.persist();
+    await synchronizePackageSelection(this, existing, saved);
+    await recordPackageRevision(this, saved, existing);
     return clone(saved);
   }
 
@@ -964,6 +1055,12 @@ export class MemoryRepository implements AppRepository {
     return clone(history);
   }
 
+  async listJobMatchHistory(jobId?: string) {
+    return clone(this.state.jobMatchHistory.filter((item) => !jobId || item.jobId === jobId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  }
+
+  async supportsStandaloneMaster() { return true; }
+
   async listResumeVersions() {
     return clone(this.state.resumes.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
   }
@@ -973,6 +1070,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveResumeVersion(resume));
     const now = nowIso();
     const existing = resume.id
       ? this.state.resumes.find((item) => item.id === resume.id)
@@ -1027,10 +1125,12 @@ export class MemoryRepository implements AppRepository {
     };
     this.state.resumes = [...this.state.resumes.filter((item) => item.id !== saved.id), saved];
     this.persist();
+    await invalidateResumeDependents(this, existing, saved);
     return clone(saved);
   }
 
   async deleteResumeVersion(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteResumeVersion(id));
     this.state.resumes = this.state.resumes.filter((resume) => resume.id !== id);
     this.persist();
   }
@@ -1126,6 +1226,7 @@ export class MemoryRepository implements AppRepository {
   async saveApplication(
     application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">,
   ) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveApplication(application));
     const existing = application.id
       ? this.state.applications.find((item) => item.id === application.id)
       : undefined;
@@ -1146,9 +1247,9 @@ export class MemoryRepository implements AppRepository {
       submittedPdfHash: application.submittedPdfHash ?? existing?.submittedPdfHash ?? "",
       status,
       appliedDate:
-        application.appliedDate?.trim() ||
-        existing?.appliedDate ||
-        (status === "applied" ? now.slice(0, 10) : ""),
+        (application.source ?? existing?.source ?? "").startsWith("history-import:")
+          ? (application.appliedDate ?? existing?.appliedDate ?? "").trim()
+          : application.appliedDate?.trim() || existing?.appliedDate || (status === "applied" ? now.slice(0, 10) : ""),
       followUpDate: application.followUpDate ?? existing?.followUpDate ?? "",
       referralContact: application.referralContact ?? existing?.referralContact ?? "",
       recruiter: application.recruiter ?? existing?.recruiter ?? "",
@@ -1177,6 +1278,7 @@ export class MemoryRepository implements AppRepository {
       createdAt: existing?.createdAt ?? application.createdAt ?? now,
       updatedAt: now,
     };
+    await validateTrackerSelection(this, saved);
     this.state.applications = [
       ...this.state.applications.filter((item) => item.id !== saved.id),
       saved,
@@ -1186,6 +1288,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async deleteApplication(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteApplication(id));
     this.state.applications = this.state.applications.filter((application) => application.id !== id);
     this.state.applicationFields = this.state.applicationFields.filter((field) => field.applicationId !== id);
     this.persist();
@@ -1457,6 +1560,7 @@ export class MemoryRepository implements AppRepository {
             settings: payload.settings,
           }
         : {
+            safetyRecords: this.state.safetyRecords,
             profile: payload.profile,
             careerItems: payload.careerItems,
             careerFacts: payload.careerFacts,
@@ -1618,15 +1722,26 @@ export class MemoryRepository implements AppRepository {
   }
 
   async confirmCareerCopilotAction(action: CareerCopilotPendingAction) {
-    const confirmed = { ...action, status: "confirmed" as const, resolvedAt: nowIso() };
+    if (!this.inTransaction) return this.transaction(repository => repository.confirmCareerCopilotAction(action));
+    const stored = await validateCopilotAction(this, action);
+    const confirmed = { ...stored, status: "confirmed" as const, resolvedAt: nowIso() };
     await this.applyConfirmedAction(confirmed);
-    this.replacePendingAction(confirmed);
+    if (confirmed.type === "update_application_status") {
+      const updated = await this.getApplication(String(confirmed.afterJson.applicationId));
+      confirmed.afterJson = { ...confirmed.afterJson, acceptedUpdatedAt: updated?.updatedAt };
+    }
+    if (confirmed.type === "set_job_note") {
+      confirmed.afterJson = { ...confirmed.afterJson, acceptedJob: await this.getJob(String(confirmed.afterJson.jobId)) };
+    }
+    await this.replacePendingAction(confirmed);
     this.persist();
-    return clone(confirmed);
+    return confirmed;
   }
 
   async cancelCareerCopilotAction(action: CareerCopilotPendingAction) {
-    const cancelled = { ...action, status: "cancelled" as const, resolvedAt: nowIso() };
+    if (!this.inTransaction) return this.transaction(repository => repository.cancelCareerCopilotAction(action));
+    const stored = await validateCopilotAction(this, action, false);
+    const cancelled = { ...stored, status: "cancelled" as const, resolvedAt: nowIso() };
     this.replacePendingAction(cancelled);
     this.persist();
     return clone(cancelled);
@@ -1704,6 +1819,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async setResumeFavorite(resumeVersionId: string, favorite: boolean) {
+    if (!this.inTransaction) return this.transaction(repository => repository.setResumeFavorite(resumeVersionId, favorite));
     this.state.resumeFavorites = favorite
       ? mergeResumeFlags(this.state.resumeFavorites, [{ resumeVersionId, createdAt: nowIso() }])
       : this.state.resumeFavorites.filter((item) => item.resumeVersionId !== resumeVersionId);
@@ -1715,6 +1831,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   async setResumeArchived(resumeVersionId: string, archived: boolean) {
+    if (!this.inTransaction) return this.transaction(repository => repository.setResumeArchived(resumeVersionId, archived));
     this.state.resumeArchives = archived
       ? mergeResumeFlags(this.state.resumeArchives, [{ resumeVersionId, archivedAt: nowIso() }])
       : this.state.resumeArchives.filter((item) => item.resumeVersionId !== resumeVersionId);
@@ -1739,6 +1856,15 @@ export class MemoryRepository implements AppRepository {
   }
 
   private async applyConfirmedAction(action: CareerCopilotPendingAction) {
+    if (action.type === RESUME_BULLET_ACTION) return applyResumeBulletAction(this, action);
+    if (action.type === APPLICATION_NEXT_ACTION) return applyApplicationNextAction(this, action);
+    if (action.type === PROFILE_SKILL_ACTION) return applyProfileSkillAction(this, action);
+    if (action.type === "set_job_note") {
+      const job = await this.getJob(String(action.afterJson.jobId));
+      if (!job) throw new Error("The selected job is missing.");
+      await this.saveJob({ ...job, notes: String(action.afterJson.notes), lastSeenAt: job.lastSeenAt });
+      return;
+    }
     if (action.type === "update_application_status") {
       const applicationId = String(action.afterJson.applicationId ?? action.recordsAffected[0]?.entityId ?? "");
       const application = this.state.applications.find((item) => item.id === applicationId);
@@ -1867,6 +1993,7 @@ export class MemoryRepository implements AppRepository {
   }
 
   private persist() {
+    if (this.inTransaction) return;
     this.refreshSearchDocuments();
     if (!this.persistKey || typeof localStorage === "undefined") {
       return;

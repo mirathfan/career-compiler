@@ -1,3 +1,12 @@
+import { applyResumeBulletAction } from "../copilot/resumeBulletActions";
+import { RESUME_BULLET_ACTION, RESUME_BULLET_AUDIT } from "../copilot/resumeBulletContract";
+import { applyApplicationNextAction } from "../copilot/applicationNextAction";
+import { APPLICATION_NEXT_ACTION, APPLICATION_NEXT_ACTION_AUDIT } from "../copilot/applicationActionContract";
+import { applyProfileSkillAction, PROFILE_SKILL_AUDIT } from "../copilot/profileSkillActions";
+import { PROFILE_SKILL_ACTION } from "../copilot/profileSkillContract";
+import { validateCopilotAction } from "../copilot/actionReview";
+import { reconcileEvidenceFreshness, reconcileEvidencePackages } from "../job-automation/evidenceFreshness";
+import { jobFingerprint, invalidateJobDependents, invalidateResumeDependents, synchronizePackageSelection, recordPackageRevision, validateTrackerSelection } from "../job-automation/safety";
 import type Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import type {
@@ -130,10 +139,17 @@ function defaultCandidatePreferences(existing?: Partial<CandidatePreferences> | 
 }
 
 function splitStatements(sql: string) {
-  return sql
-    .split(";")
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+  // Migrations are repository-owned SQL. Trigger bodies must remain one statement.
+  const statements: string[] = [];
+  let pending = "";
+  for (const part of sql.split(";")) {
+    pending += `${part};`;
+    if (!pending.replace(/;/g, "").trim()) { pending = ""; continue; }
+    if (/^\s*CREATE\s+TRIGGER\b/i.test(pending) && !/\bEND;\s*$/i.test(pending)) continue;
+    statements.push(pending.trim()); pending = "";
+  }
+  if (pending.trim()) throw new Error("Incomplete migration trigger.");
+  return statements;
 }
 
 function mapProfile(row: Row): Profile {
@@ -314,6 +330,7 @@ function mapJob(row: Row): Job {
     canonicalUrl: asString(row.canonical_url) || asString(row.source_url),
     contentHash: asString(row.content_hash) || stableContentHash(asString(row.raw_description)),
     sourcePayloadJson: parseJson(row.source_payload_json, {}),
+    notes: asString(row.notes),
     status: (asString(row.automation_status) || "new") as Job["status"],
     closedAt: asString(row.closed_at),
     changedSinceAnalysis: asBool(row.changed_since_analysis),
@@ -406,6 +423,7 @@ function mapAnswerVaultEntry(row: Row): ApplicationAnswerVaultEntry {
 }
 
 function mapJobAutomationRun(row: Row): JobAutomationRun {
+  const storedSummary = parseJson(row.summary_json, {}) as Partial<JobAutomationRun["summary"]>;
   return {
     id: asString(row.id),
     startedAt: asString(row.started_at),
@@ -420,7 +438,39 @@ function mapJobAutomationRun(row: Row): JobAutomationRun {
     jobsAnalyzed: Number(row.jobs_analyzed ?? 0),
     resumesGenerated: Number(row.resumes_generated ?? 0),
     errors: parseJson(row.errors_json, []) as JobAutomationRun["errors"],
-    summary: parseJson(row.summary_json, { message: "", highMatchJobIds: [], sourceFailureCount: 0 }) as JobAutomationRun["summary"],
+    summary: {
+      message: storedSummary.message ?? "",
+      highMatchJobIds: storedSummary.highMatchJobIds ?? [],
+      sourceFailureCount: storedSummary.sourceFailureCount ?? 0,
+      aiMetrics: {
+        eligible: storedSummary.aiMetrics?.eligible ?? 0,
+        approvalsRequested: storedSummary.aiMetrics?.approvalsRequested ?? 0,
+        started: storedSummary.aiMetrics?.started ?? 0,
+        valid: storedSummary.aiMetrics?.valid ?? 0,
+        repaired: storedSummary.aiMetrics?.repaired ?? 0,
+        failed: storedSummary.aiMetrics?.failed ?? 0,
+        skippedCap: storedSummary.aiMetrics?.skippedCap ?? 0,
+        skippedUnchanged: storedSummary.aiMetrics?.skippedUnchanged ?? 0,
+        resumeQueued: storedSummary.aiMetrics?.resumeQueued ?? 0,
+        resumeCompleted: storedSummary.aiMetrics?.resumeCompleted ?? 0,
+        resumeFailed: storedSummary.aiMetrics?.resumeFailed ?? 0,
+        resumeSkippedCap: storedSummary.aiMetrics?.resumeSkippedCap ?? 0,
+        packagesAwaitingApproval: storedSummary.aiMetrics?.packagesAwaitingApproval ?? 0,
+      },
+    },
+  };
+}
+
+function mapJobMatchHistory(row: Row): JobMatchHistory {
+  return {
+    id: asString(row.id),
+    jobId: asString(row.job_id),
+    contentHash: asString(row.content_hash),
+    deterministicScore: Number(row.deterministic_score ?? 0),
+    aiScore: row.ai_score === null || row.ai_score === undefined ? null : Number(row.ai_score),
+    combinedScore: Number(row.combined_score ?? 0),
+    analysisJson: parseJson(row.analysis_json, {}),
+    createdAt: asString(row.created_at),
   };
 }
 
@@ -762,8 +812,46 @@ function mapApprovedVariant(row: Row): ApprovedBulletVariant {
 export class SqliteRepository implements AppRepository {
   private readonly db: TauriDatabase;
 
-  constructor(db: TauriDatabase) {
+  private readonly inTransaction: boolean;
+  constructor(db: TauriDatabase, inTransaction = false) {
+    this.inTransaction = inTransaction;
     this.db = db;
+  }
+
+  private transactionRepository(db: TauriDatabase) {
+    const repository = new SqliteRepository(db, true);
+    // Preserve instrumentation/fault injection while changing only the transport.
+    for (const key of Object.getOwnPropertyNames(this)) {
+      const value = (this as unknown as Record<string, unknown>)[key];
+      if (typeof value === "function" && !value.name.startsWith("bound ") && key !== "transaction") Object.defineProperty(repository, key, { value, writable: true, configurable: true });
+    }
+    return repository;
+  }
+  async transaction<T>(work: (repository: AppRepository) => Promise<T>): Promise<T> {
+    if (this.inTransaction) return work(this);
+    // Only fixture adapters lack a path. The official plugin always has one;
+    // native use never sends BEGIN/COMMIT through its pooled execute command.
+    if (!this.db.path) {
+      await this.db.execute("BEGIN IMMEDIATE");
+      try { const result = await work(this.transactionRepository(this.db)); await this.db.execute("COMMIT"); return result; }
+      catch (error) { await this.db.execute("ROLLBACK"); throw error; }
+    }
+    const id = await invoke<string>("transaction_begin");
+    const db = {
+      path: this.db.path,
+      execute: (query: string, values: unknown[] = []) => invoke("transaction_query", { id, query, values, select: false }),
+      select: (query: string, values: unknown[] = []) => invoke("transaction_query", { id, query, values, select: true }),
+    } as unknown as TauriDatabase;
+    try { const result = await work(this.transactionRepository(db)); await invoke("transaction_finish", { id, commit: true }); return result; }
+    catch (error) { await invoke("transaction_finish", { id, commit: false }).catch(() => {}); throw error; }
+  }
+
+  async listSafetyRecords(kind: string): Promise<import("./repository").SafetyRecord[]> {
+    const rows = await this.db.select<Row[]>("SELECT * FROM safety_records WHERE kind=$1", [kind]);
+    return rows.map((row) => ({ id: asString(row.id), kind: asString(row.kind), value: parseJson(row.value_json, {}) as Record<string, unknown>, createdAt: asString(row.created_at) }));
+  }
+  async saveSafetyRecord(record: import("./repository").SafetyRecord) {
+    await this.db.execute(`INSERT INTO safety_records(id,kind,value_json,created_at) VALUES($1,$2,$3,$4) ${["package_audit", PROFILE_SKILL_AUDIT, APPLICATION_NEXT_ACTION_AUDIT, RESUME_BULLET_AUDIT].includes(record.kind) ? "" : "ON CONFLICT(kind,id) DO UPDATE SET value_json=excluded.value_json"}`, [record.id,record.kind,JSON.stringify(record.value),record.createdAt]);
   }
 
   async initialize() {
@@ -895,6 +983,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveProfile(profile: Profile) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveProfile(profile));
     const saved = { ...profile, updatedAt: nowIso() };
     await this.db.execute(
       `INSERT INTO profile (
@@ -938,6 +1027,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveCareerItem(item: Partial<CareerItem> & Pick<CareerItem, "type" | "title">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveCareerItem(item));
     const existing = item.id
       ? await this.db.select<Row[]>("SELECT * FROM career_items WHERE id = $1", [item.id])
       : [];
@@ -986,11 +1076,16 @@ export class SqliteRepository implements AppRepository {
         saved.updatedAt,
       ],
     );
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return saved;
   }
 
   async deleteCareerItem(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteCareerItem(id));
     await this.db.execute("DELETE FROM career_items WHERE id = $1", [id]);
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async updateCareerItemOrder(ids: string[]) {
@@ -1033,6 +1128,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveCareerFact(fact: Partial<CareerFact> & Pick<CareerFact, "careerItemId" | "statement">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveCareerFact(fact));
     const existing = fact.id
       ? await this.db.select<Row[]>("SELECT * FROM career_facts WHERE id = $1", [fact.id])
       : [];
@@ -1092,11 +1188,16 @@ export class SqliteRepository implements AppRepository {
         saved.notes,
       ],
     );
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return saved;
   }
 
   async deleteCareerFact(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteCareerFact(id));
     await this.db.execute("DELETE FROM career_facts WHERE id = $1", [id]);
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async bulkUpdateCareerFacts(
@@ -1124,6 +1225,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveSkill(skill: Partial<Skill> & Pick<Skill, "name" | "category">) {
+    if (!this.inTransaction) return this.transaction(repository => repository.saveSkill(skill));
     const existing = skill.id
       ? await this.db.select<Row[]>("SELECT * FROM skills WHERE id = $1", [skill.id])
       : [];
@@ -1142,11 +1244,16 @@ export class SqliteRepository implements AppRepository {
         proficiency_note = excluded.proficiency_note, enabled = excluded.enabled`,
       [saved.id, saved.name, saved.category, saved.proficiencyNote, saved.enabled ? 1 : 0],
     );
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
     return saved;
   }
 
   async deleteSkill(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteSkill(id));
     await this.db.execute("DELETE FROM skills WHERE id = $1", [id]);
+    await this.listJobMatches();
+    await reconcileEvidencePackages(this);
   }
 
   async listCandidateClaims() {
@@ -1464,28 +1571,30 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveJob(job: Partial<Job> & Pick<Job, "rawDescription">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveJob(job));
     const existing = job.id ? await this.db.select<Row[]>("SELECT * FROM jobs WHERE id = $1", [job.id]) : [];
     const mapped = existing[0] ? mapJob(existing[0]) : undefined;
     const now = nowIso();
     const saved: Job = {
+      notes: job.notes ?? mapped?.notes ?? "",
       id: mapped?.id ?? job.id ?? createId("job"),
       company: job.company ?? mapped?.company ?? "",
       roleTitle: job.roleTitle ?? mapped?.roleTitle ?? "",
       sourceUrl: job.sourceUrl ?? mapped?.sourceUrl ?? "",
       rawDescription: job.rawDescription,
-      analysisJson: job.analysisJson ?? mapped?.analysisJson ?? null,
+      analysisJson: job.analysisJson !== undefined ? job.analysisJson : mapped?.analysisJson ?? null,
       sourceId: job.sourceId ?? mapped?.sourceId ?? "",
       externalId: job.externalId ?? mapped?.externalId ?? "",
       normalizedTitle: job.normalizedTitle ?? mapped?.normalizedTitle ?? normalizeTitle(job.roleTitle ?? mapped?.roleTitle ?? ""),
       descriptionHtml: job.descriptionHtml ?? mapped?.descriptionHtml ?? "",
-      descriptionText: job.descriptionText ?? mapped?.descriptionText ?? job.rawDescription,
+      descriptionText: job.descriptionText ?? (job.rawDescription !== mapped?.rawDescription ? job.rawDescription : mapped?.descriptionText ?? job.rawDescription),
       location: job.location ?? mapped?.location ?? "",
       normalizedLocation: job.normalizedLocation ?? mapped?.normalizedLocation ?? normalizeLocation(job.location ?? mapped?.location ?? ""),
       workplaceType: job.workplaceType ?? mapped?.workplaceType ?? "unspecified",
       employmentType: job.employmentType ?? mapped?.employmentType ?? "",
       department: job.department ?? mapped?.department ?? "",
-      salaryMin: job.salaryMin ?? mapped?.salaryMin ?? null,
-      salaryMax: job.salaryMax ?? mapped?.salaryMax ?? null,
+      salaryMin: job.salaryMin !== undefined ? job.salaryMin : mapped?.salaryMin ?? null,
+      salaryMax: job.salaryMax !== undefined ? job.salaryMax : mapped?.salaryMax ?? null,
       salaryCurrency: job.salaryCurrency ?? mapped?.salaryCurrency ?? "",
       salaryInterval: job.salaryInterval ?? mapped?.salaryInterval ?? "",
       postedAt: job.postedAt ?? mapped?.postedAt ?? "",
@@ -1501,16 +1610,18 @@ export class SqliteRepository implements AppRepository {
       createdAt: mapped?.createdAt ?? now,
       updatedAt: now,
     };
+    saved.contentHash = jobFingerprint(saved);
+    if (mapped && jobFingerprint(mapped) !== saved.contentHash) { saved.analysisJson = null; saved.changedSinceAnalysis = true; }
     await this.db.execute(
       `INSERT INTO jobs (
         id,company,role_title,source_url,raw_description,analysis_json,created_at,updated_at,
         source_id,external_id,normalized_title,description_html,description_text,location,normalized_location,
         workplace_type,employment_type,department,salary_min,salary_max,salary_currency,salary_interval,
         posted_at,discovered_at,last_seen_at,application_url,canonical_url,content_hash,source_payload_json,
-        automation_status,closed_at,changed_since_analysis
+        automation_status,closed_at,changed_since_analysis,notes
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-        $23,$24,$25,$26,$27,$28,$29,$30,$31,$32
+        $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33
       )
        ON CONFLICT(id) DO UPDATE SET
         company = excluded.company, role_title = excluded.role_title, source_url = excluded.source_url,
@@ -1526,7 +1637,7 @@ export class SqliteRepository implements AppRepository {
         application_url = excluded.application_url, canonical_url = excluded.canonical_url,
         content_hash = excluded.content_hash, source_payload_json = excluded.source_payload_json,
         automation_status = excluded.automation_status, closed_at = excluded.closed_at,
-        changed_since_analysis = excluded.changed_since_analysis,
+        notes = excluded.notes, changed_since_analysis = excluded.changed_since_analysis,
         updated_at = excluded.updated_at`,
       [
         saved.id,
@@ -1561,8 +1672,10 @@ export class SqliteRepository implements AppRepository {
         saved.status,
         saved.closedAt,
         saved.changedSinceAnalysis ? 1 : 0,
+        saved.notes,
       ],
     );
+    await invalidateJobDependents(this, mapped, saved);
     return saved;
   }
 
@@ -1609,20 +1722,24 @@ export class SqliteRepository implements AppRepository {
   }
 
   async listJobMatches() {
-    return (await this.db.select<Row[]>("SELECT * FROM job_matches ORDER BY combined_score DESC")).map(mapJobMatch);
+    if (!this.inTransaction) return this.transaction(repository => repository.listJobMatches());
+    return reconcileEvidenceFreshness(this, (await this.db.select<Row[]>("SELECT * FROM job_matches ORDER BY combined_score DESC")).map(mapJobMatch));
   }
 
   async getJobMatch(jobId: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.getJobMatch(jobId));
     const rows = await this.db.select<Row[]>("SELECT * FROM job_matches WHERE job_id = $1", [jobId]);
-    return rows[0] ? mapJobMatch(rows[0]) : null;
+    return rows[0] ? (await reconcileEvidenceFreshness(this, [mapJobMatch(rows[0])]))[0] : null;
   }
 
   async saveJobMatch(match: Partial<JobMatch> & Pick<JobMatch, "jobId" | "deterministicScore" | "combinedScore">) {
-    const existing = await this.getJobMatch(match.jobId);
+    if (!this.inTransaction) return this.transaction(repository => repository.saveJobMatch(match));
+    const rows = await this.db.select<Row[]>("SELECT * FROM job_matches WHERE job_id = $1", [match.jobId]);
+    const existing = rows[0] ? mapJobMatch(rows[0]) : null;
     const now = nowIso();
     const saved: JobMatch = {
       id: existing?.id ?? match.id ?? createId("job-match"), jobId: match.jobId,
-      deterministicScore: match.deterministicScore, aiScore: match.aiScore ?? existing?.aiScore ?? null,
+      deterministicScore: match.deterministicScore, aiScore: match.aiScore !== undefined ? match.aiScore : existing?.aiScore ?? null,
       combinedScore: match.combinedScore,
       scoreBreakdown: match.scoreBreakdown ?? existing?.scoreBreakdown ?? { title: 0, skills: 0, experience: 0, location: 0, projects: 0, recency: 0 },
       scoreReasons: match.scoreReasons ?? existing?.scoreReasons ?? [], hardReject: match.hardReject ?? existing?.hardReject ?? false,
@@ -1692,6 +1809,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveApplicationPackage(applicationPackage: Partial<ApplicationPackage> & Pick<ApplicationPackage, "jobId">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveApplicationPackage(applicationPackage));
     const rows = await this.db.select<Row[]>("SELECT * FROM application_packages WHERE job_id = $1", [applicationPackage.jobId]);
     const existing = rows[0] ? mapApplicationPackage(rows[0]) : undefined;
     const now = nowIso();
@@ -1706,9 +1824,11 @@ export class SqliteRepository implements AppRepository {
       suggestedAnswers: applicationPackage.suggestedAnswers ?? existing?.suggestedAnswers ?? {},
       unresolvedQuestions: applicationPackage.unresolvedQuestions ?? existing?.unresolvedQuestions ?? [],
       generatedAt: applicationPackage.generatedAt ?? existing?.generatedAt ?? "",
-      approvedAt: applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
+      approvedAt: existing && applicationPackage.resumeVersionId !== undefined && applicationPackage.resumeVersionId !== existing.resumeVersionId
+        ? "" : applicationPackage.approvedAt ?? existing?.approvedAt ?? "",
       createdAt: existing?.createdAt ?? now, updatedAt: now,
     };
+    if (saved.validationStatus !== "valid" || (existing && JSON.stringify([existing.resumeVersionId,existing.coverLetterText,existing.suggestedAnswers,existing.selectedResumeProfile]) !== JSON.stringify([saved.resumeVersionId,saved.coverLetterText,saved.suggestedAnswers,saved.selectedResumeProfile]))) saved.approvedAt = "";
     await this.db.execute(
       `INSERT INTO application_packages (id,job_id,resume_version_id,cover_letter_text,selected_resume_profile,generation_status,
        validation_status,validation_errors_json,suggested_answers_json,unresolved_questions_json,generated_at,approved_at,created_at,updated_at)
@@ -1722,6 +1842,8 @@ export class SqliteRepository implements AppRepository {
         saved.validationStatus,jsonText(saved.validationErrors),jsonText(saved.suggestedAnswers),jsonText(saved.unresolvedQuestions),
         saved.generatedAt,saved.approvedAt,saved.createdAt,saved.updatedAt],
     );
+    await synchronizePackageSelection(this, existing, saved);
+    await recordPackageRevision(this, saved, existing);
     return saved;
   }
 
@@ -1789,6 +1911,20 @@ export class SqliteRepository implements AppRepository {
     return history;
   }
 
+  async listJobMatchHistory(jobId?: string) {
+    const rows = jobId
+      ? await this.db.select<Row[]>("SELECT * FROM job_match_analysis_history WHERE job_id = $1 ORDER BY created_at DESC", [jobId])
+      : await this.db.select<Row[]>("SELECT * FROM job_match_analysis_history ORDER BY created_at DESC");
+    return rows.map(mapJobMatchHistory);
+  }
+
+  async supportsStandaloneMaster() {
+    const columns = await this.db.select<Array<{ required: number }>>(
+      `SELECT "notnull" AS required FROM pragma_table_info('resume_versions') WHERE name = 'job_id'`,
+    );
+    return columns.length === 1 && Number(columns[0].required) === 0;
+  }
+
   async listResumeVersions() {
     return (await this.db.select<Row[]>("SELECT * FROM resume_versions ORDER BY created_at DESC")).map(mapResume);
   }
@@ -1799,6 +1935,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async saveResumeVersion(resume: Partial<ResumeVersion> & Pick<ResumeVersion, "jobId" | "contentJson">) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveResumeVersion(resume));
     const existing = resume.id
       ? await this.db.select<Row[]>("SELECT * FROM resume_versions WHERE id = $1", [resume.id])
       : [];
@@ -1807,6 +1944,9 @@ export class SqliteRepository implements AppRepository {
     const savedId = mapped?.id ?? resume.id ?? createId("resume");
     const savedName = resume.name ?? mapped?.name ?? "Tailored resume";
     const savedKind = resume.kind ?? mapped?.kind ?? "tailored";
+    if (savedKind === "master" && !resume.jobId && !await this.supportsStandaloneMaster()) {
+      throw new Error("Standalone Master saving requires the approved database update. You can review and preview the PDF without a job.");
+    }
     const parentResumeVersionId = resume.parentResumeVersionId ?? mapped?.parentResumeVersionId ?? "";
     const baseResumeVersionId =
       resume.baseResumeVersionId ?? mapped?.baseResumeVersionId ?? parentResumeVersionId;
@@ -1879,7 +2019,7 @@ export class SqliteRepository implements AppRepository {
         updated_at = excluded.updated_at`,
       [
         saved.id,
-        saved.jobId,
+        saved.kind === "master" && !saved.jobId ? null : saved.jobId,
         saved.name,
         saved.templateId,
         JSON.stringify(saved.contentJson),
@@ -1902,10 +2042,12 @@ export class SqliteRepository implements AppRepository {
         JSON.stringify(saved.resumeDocumentJson),
       ],
     );
+    await invalidateResumeDependents(this, mapped, saved);
     return saved;
   }
 
   async deleteResumeVersion(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteResumeVersion(id));
     await this.db.execute("DELETE FROM resume_versions WHERE id = $1", [id]);
   }
 
@@ -2034,6 +2176,7 @@ export class SqliteRepository implements AppRepository {
   async saveApplication(
     application: Partial<ApplicationRecord> & Pick<ApplicationRecord, "company" | "role">,
   ) {
+    if (!this.inTransaction) return this.transaction((repository) => repository.saveApplication(application));
     const existing = application.id ? await this.getApplication(application.id) : null;
     const now = nowIso();
     const status = application.status ?? existing?.status ?? "preparing";
@@ -2052,9 +2195,9 @@ export class SqliteRepository implements AppRepository {
       submittedPdfHash: application.submittedPdfHash ?? existing?.submittedPdfHash ?? "",
       status,
       appliedDate:
-        application.appliedDate?.trim() ||
-        existing?.appliedDate ||
-        (status === "applied" ? now.slice(0, 10) : ""),
+        (application.source ?? existing?.source ?? "").startsWith("history-import:")
+          ? (application.appliedDate ?? existing?.appliedDate ?? "").trim()
+          : application.appliedDate?.trim() || existing?.appliedDate || (status === "applied" ? now.slice(0, 10) : ""),
       followUpDate: application.followUpDate ?? existing?.followUpDate ?? "",
       referralContact: application.referralContact ?? existing?.referralContact ?? "",
       recruiter: application.recruiter ?? existing?.recruiter ?? "",
@@ -2083,6 +2226,7 @@ export class SqliteRepository implements AppRepository {
       createdAt: existing?.createdAt ?? application.createdAt ?? now,
       updatedAt: now,
     };
+    await validateTrackerSelection(this, saved);
     await this.db.execute(
       `INSERT INTO applications (
         id, job_id, company, role, job_url, resume_version_id, status, applied_date,
@@ -2155,6 +2299,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async deleteApplication(id: string) {
+    if (!this.inTransaction) return this.transaction(repository => repository.deleteApplication(id));
     await this.db.execute("DELETE FROM application_fields WHERE application_id = $1", [id]);
     await this.db.execute("DELETE FROM applications WHERE id = $1", [id]);
   }
@@ -2310,6 +2455,11 @@ export class SqliteRepository implements AppRepository {
   }
 
   async applyCareerImportProposal(proposal: CareerImportProposal) {
+    if (!this.inTransaction) {
+      return this.transaction(repository => repository.applyCareerImportProposal(proposal)).catch(caught => {
+        throw new Error(`career_import_failed|Smart Career Intake save failed and changes were rolled back. ${caught instanceof Error ? caught.message : String(caught)}`);
+      });
+    }
     const applied = applyCareerImportToState(
       {
         profile: await this.getProfile(),
@@ -2319,36 +2469,23 @@ export class SqliteRepository implements AppRepository {
       },
       proposal,
     );
-    await this.db.execute("BEGIN IMMEDIATE");
-    try {
-      await this.persistCareerImportChanges(applied);
-      await this.saveCareerImportRecord(applied.record);
-      await this.db.execute("COMMIT");
-      return applied.record;
-    } catch (caught) {
-      await this.db.execute("ROLLBACK").catch(() => undefined);
-      throw new Error(
-        `career_import_failed|Smart Career Intake save failed and changes were rolled back. ${caught instanceof Error ? caught.message : String(caught)}`,
-      );
-    }
+    await this.persistCareerImportChanges(applied);
+    await this.saveCareerImportRecord(applied.record);
+    return applied.record;
   }
 
   async undoLastCareerImport() {
+    if (!this.inTransaction) {
+      return this.transaction(repository => repository.undoLastCareerImport()).catch(caught => {
+        throw new Error(`career_import_undo_failed|Smart Career Intake undo failed and changes were rolled back. ${caught instanceof Error ? caught.message : String(caught)}`);
+      });
+    }
     const latest = (await this.listCareerImportRecords()).find((record) => !record.undoneAt);
     if (!latest) return null;
     const undoneAt = nowIso();
-    await this.db.execute("BEGIN IMMEDIATE");
-    try {
-      await this.undoCareerImportRecord(latest);
-      await this.db.execute("UPDATE career_imports SET undone_at = $1 WHERE id = $2", [undoneAt, latest.id]);
-      await this.db.execute("COMMIT");
-      return { ...latest, undoneAt };
-    } catch (caught) {
-      await this.db.execute("ROLLBACK").catch(() => undefined);
-      throw new Error(
-        `career_import_undo_failed|Smart Career Intake undo failed and changes were rolled back. ${caught instanceof Error ? caught.message : String(caught)}`,
-      );
-    }
+    await this.undoCareerImportRecord(latest);
+    await this.db.execute("UPDATE career_imports SET undone_at = $1 WHERE id = $2", [undoneAt, latest.id]);
+    return { ...latest, undoneAt };
   }
 
   async createCareerImportPackage(careerItemIds?: string[]) {
@@ -2785,21 +2922,25 @@ export class SqliteRepository implements AppRepository {
   }
 
   async confirmCareerCopilotAction(action: CareerCopilotPendingAction) {
-    const confirmed = { ...action, status: "confirmed" as const, resolvedAt: nowIso() };
-    await this.db.execute("BEGIN IMMEDIATE");
-    try {
-      await this.applyConfirmedAction(confirmed);
-      await this.replacePendingAction(confirmed);
-      await this.db.execute("COMMIT");
-      return confirmed;
-    } catch (caught) {
-      await this.db.execute("ROLLBACK").catch(() => undefined);
-      throw caught;
+    if (!this.inTransaction) return this.transaction(repository => repository.confirmCareerCopilotAction(action));
+    const stored = await validateCopilotAction(this, action);
+    const confirmed = { ...stored, status: "confirmed" as const, resolvedAt: nowIso() };
+    await this.applyConfirmedAction(confirmed);
+    if (confirmed.type === "update_application_status") {
+      const updated = await this.getApplication(String(confirmed.afterJson.applicationId));
+      confirmed.afterJson = { ...confirmed.afterJson, acceptedUpdatedAt: updated?.updatedAt };
     }
+    if (confirmed.type === "set_job_note") {
+      confirmed.afterJson = { ...confirmed.afterJson, acceptedJob: await this.getJob(String(confirmed.afterJson.jobId)) };
+    }
+    await this.replacePendingAction(confirmed);
+    return confirmed;
   }
 
   async cancelCareerCopilotAction(action: CareerCopilotPendingAction) {
-    const cancelled = { ...action, status: "cancelled" as const, resolvedAt: nowIso() };
+    if (!this.inTransaction) return this.transaction(repository => repository.cancelCareerCopilotAction(action));
+    const stored = await validateCopilotAction(this, action, false);
+    const cancelled = { ...stored, status: "cancelled" as const, resolvedAt: nowIso() };
     await this.replacePendingAction(cancelled);
     return cancelled;
   }
@@ -2999,6 +3140,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async setResumeFavorite(resumeVersionId: string, favorite: boolean) {
+    if (!this.inTransaction) return this.transaction(repository => repository.setResumeFavorite(resumeVersionId, favorite));
     if (favorite) {
       await this.db.execute(
         "INSERT OR REPLACE INTO resume_favorites (resume_version_id, created_at) VALUES ($1,$2)",
@@ -3017,6 +3159,7 @@ export class SqliteRepository implements AppRepository {
   }
 
   async setResumeArchived(resumeVersionId: string, archived: boolean) {
+    if (!this.inTransaction) return this.transaction(repository => repository.setResumeArchived(resumeVersionId, archived));
     if (archived) {
       await this.db.execute(
         "INSERT OR REPLACE INTO resume_archives (resume_version_id, archived_at) VALUES ($1,$2)",
@@ -3214,6 +3357,15 @@ export class SqliteRepository implements AppRepository {
   }
 
   private async applyConfirmedAction(action: CareerCopilotPendingAction) {
+    if (action.type === RESUME_BULLET_ACTION) return applyResumeBulletAction(this, action);
+    if (action.type === APPLICATION_NEXT_ACTION) return applyApplicationNextAction(this, action);
+    if (action.type === PROFILE_SKILL_ACTION) return applyProfileSkillAction(this, action);
+    if (action.type === "set_job_note") {
+      const job = await this.getJob(String(action.afterJson.jobId));
+      if (!job) throw new Error("The selected job is missing.");
+      await this.saveJob({ ...job, notes: String(action.afterJson.notes), lastSeenAt: job.lastSeenAt });
+      return;
+    }
     if (action.type === "update_application_status") {
       const applicationId = String(action.afterJson.applicationId ?? action.recordsAffected[0]?.entityId ?? "");
       const application = await this.getApplication(applicationId);

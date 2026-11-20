@@ -51,6 +51,8 @@ export type ApplicationStatus =
 export type EvaluationMode = "ranking" | "mock" | "openai";
 export type AIRequestType =
   | "job_analysis"
+  | "job_match_analysis"
+  | "job_match_repair"
   | "resume_plan"
   | "resume_generation"
   | "validation_repair"
@@ -334,6 +336,8 @@ export interface GeneratedApplicationAnswer {
 }
 
 export interface Job {
+  /** User-authored private notes; absent in older backups. */
+  notes?: string;
   id: string;
   company: string;
   roleTitle: string;
@@ -449,6 +453,18 @@ export interface JobSearchPreferences {
   resumeGenerationMode: "manual" | "threshold";
   resumeGenerationThreshold: number;
   requireApprovalBeforeAi: boolean;
+  aiMatchEnabled: boolean;
+  aiMatchRequireApproval: boolean;
+  aiMatchMinimumDeterministicScore: number;
+  maximumAiAnalysesPerRun: number;
+  maximumAiAnalysesPerDay: number;
+  aiMatchModel: string;
+  aiMatchMockMode: boolean;
+  deterministicScoreWeight: number;
+  aiScoreWeight: number;
+  maximumResumesPerDay: number;
+  resumeRequiresAiAnalysis: boolean;
+  requirePackageApproval: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -496,7 +512,26 @@ export interface JobAutomationRun {
   jobsAnalyzed: number;
   resumesGenerated: number;
   errors: Array<{ scope: "source" | "job" | "analysis" | "resume"; id: string; code: string; message: string }>;
-  summary: { message: string; highMatchJobIds: string[]; sourceFailureCount: number };
+  summary: {
+    message: string;
+    highMatchJobIds: string[];
+    sourceFailureCount: number;
+    aiMetrics: {
+      eligible: number;
+      approvalsRequested: number;
+      started: number;
+      valid: number;
+      repaired: number;
+      failed: number;
+      skippedCap: number;
+      skippedUnchanged: number;
+      resumeQueued: number;
+      resumeCompleted: number;
+      resumeFailed: number;
+      resumeSkippedCap: number;
+      packagesAwaitingApproval: number;
+    };
+  };
 }
 
 export interface JobDuplicateEvent {
@@ -522,6 +557,7 @@ export interface JobMatchHistory {
 
 export interface ResumeVersion {
   id: string;
+  /** Empty for a standalone Master; serialized as SQL NULL after the approved schema update. */
   jobId: string;
   name: string;
   kind: ResumeDocumentKind;
@@ -917,6 +953,8 @@ export interface GenerationMetadata {
 
 export interface PromptVersionMap {
   jobAnalysis: string;
+  jobMatchAnalysis?: string;
+  jobMatchRepair?: string;
   planning: string;
   resumeGeneration: string;
   repair: string;
@@ -1301,8 +1339,12 @@ export type CareerCopilotToolName =
   | "get_recent_activity";
 
 export type CareerCopilotWriteActionType =
+  | "revise_resume_bullet"
+  | "add_evidence_backed_profile_skill"
+  | "set_application_next_action"
   | "create_resume_from_base"
   | "create_fresh_resume_draft"
+  | "set_job_note"
   | "add_application_note"
   | "update_application_status"
   | "link_resume_to_application"

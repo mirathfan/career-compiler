@@ -715,4 +715,20 @@ export const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_automation_runs_started ON job_automation_runs(started_at DESC);
     `,
   },
+  { id: 10, name: "durable_authorization_records", sql: `
+    CREATE TABLE IF NOT EXISTS safety_records (
+      id TEXT NOT NULL, kind TEXT NOT NULL, value_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(kind,id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_safety_records_kind ON safety_records(kind,created_at);
+    CREATE TRIGGER IF NOT EXISTS immutable_package_audit_update BEFORE UPDATE ON safety_records WHEN OLD.kind='package_audit'
+      BEGIN SELECT RAISE(ABORT,'package audit is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS immutable_package_audit_delete BEFORE DELETE ON safety_records WHEN OLD.kind='package_audit'
+      BEGIN SELECT RAISE(ABORT,'package audit is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS durable_budget_delete BEFORE DELETE ON safety_records WHEN OLD.kind='ai_budget'
+      BEGIN SELECT RAISE(ABORT,'reserved budget cannot be refunded'); END;
+    CREATE TRIGGER IF NOT EXISTS immutable_budget_day BEFORE UPDATE ON safety_records WHEN OLD.kind='ai_budget' AND (OLD.kind <> NEW.kind OR OLD.id <> NEW.id OR json_extract(OLD.value_json,'$.day') <> json_extract(NEW.value_json,'$.day') OR json_extract(NEW.value_json,'$.attemptedCalls') < json_extract(OLD.value_json,'$.attemptedCalls') OR (json_extract(OLD.value_json,'$.state')='finished' AND json_extract(NEW.value_json,'$.state') <> 'finished'))
+      BEGIN SELECT RAISE(ABORT,'reserved budget day is immutable'); END;
+  ` },
+  { id: 11, name: "private_job_notes", sql: "ALTER TABLE jobs ADD COLUMN notes TEXT NOT NULL DEFAULT '';" },
 ];

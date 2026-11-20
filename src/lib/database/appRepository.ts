@@ -4,6 +4,8 @@ import { SqliteRepository } from "./sqliteRepository";
 
 let repositoryPromise: Promise<AppRepository> | null = null;
 
+export function configureAppRepository(repository: AppRepository) { repositoryPromise = Promise.resolve(repository); }
+
 function isTauriRuntime() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

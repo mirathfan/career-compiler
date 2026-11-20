@@ -525,6 +525,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -533,6 +534,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-sql",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

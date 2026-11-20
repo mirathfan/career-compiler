@@ -261,3 +261,14 @@ describe("additive database migrations", () => {
     database.close();
   });
 });
+
+
+it("adds private job notes to existing synthetic jobs without changing their data", () => {
+  const database = createDatabase();
+  try {
+    for (const migration of migrations.filter(item => item.id < 11)) applyMigration(database, migration.id);
+    database.run("INSERT INTO jobs (id,company,role_title,source_url,raw_description,created_at,updated_at) VALUES ('synthetic-note-job','Example','Engineer','','Synthetic description','created','updated')");
+    applyMigration(database, 11);
+    expect(database.exec("SELECT company,raw_description,notes FROM jobs WHERE id='synthetic-note-job'")[0].values[0]).toEqual(["Example", "Synthetic description", ""]);
+  } finally { database.close(); }
+});
