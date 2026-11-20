@@ -1,3 +1,7 @@
+import { answerPreparationQuery } from "./preparationWorkflow";
+import { answerResumeBulletQuery } from "./resumeBulletActions";
+import { answerApplicationNextAction } from "./applicationNextAction";
+import { answerProfileSkillQuery } from "./profileSkillActions";
 import type {
   ApplicationRecord,
   CareerCopilotContextType,
@@ -85,25 +89,42 @@ function mentionsStatusUpdate(query: string) {
 
 function statusFromQuery(query: string): ApplicationRecord["status"] | "" {
   const statuses: ApplicationRecord["status"][] = ["preparing", "ready", "applied", "interview", "rejected", "offer", "withdrawn"];
+  const destination = query.match(/(?:to|as)\s+(preparing|ready|applied|interview|rejected|offer|withdrawn)\b/i)?.[1]?.toLowerCase();
+  if (destination) return destination as ApplicationRecord["status"];
   return statuses.find((status) => new RegExp(`\\b${status}\\b`, "i").test(query)) ?? "";
+}
+
+/** Guided drafts either persist a reviewable proposal atomically or remain unsaved. */
+export async function proposeJobNote(repository: AppRepository, input: Omit<SendCareerCopilotMessageInput, "content"> & { text: string }): Promise<CareerCopilotTurn> {
+  return repository.transaction(async tx => {
+    const turn = await sendCareerCopilotMessage(tx, { ...input, content: `Set job note: ${input.text}` });
+    if (!turn.assistantMessage.pendingActionsJson.some(action => action.type === "set_job_note")) throw new Error(turn.assistantMessage.content);
+    return turn;
+  });
 }
 
 export async function sendCareerCopilotMessage(
   repository: AppRepository,
   input: SendCareerCopilotMessageInput,
 ): Promise<CareerCopilotTurn> {
-  const thread = input.threadId
-    ? (await repository.getCareerCopilotThread(input.threadId)) ??
-      (await repository.saveCareerCopilotThread({
-        title: titleFromContent(input.content),
-        activeContextType: input.activeContextType ?? "all",
-        activeContextId: input.activeContextId ?? "",
-      }))
-    : await repository.saveCareerCopilotThread({
-        title: titleFromContent(input.content),
-        activeContextType: input.activeContextType ?? "all",
-        activeContextId: input.activeContextId ?? "",
-      });
+  return repository.transaction(tx => sendCareerCopilotTurn(tx, input));
+}
+
+async function sendCareerCopilotTurn(repository: AppRepository, input: SendCareerCopilotMessageInput): Promise<CareerCopilotTurn> {
+  if (!input.content.trim() || input.content.length > 12000) throw new Error("Enter a message between 1 and 12,000 characters.");
+  const existing = input.threadId ? await repository.getCareerCopilotThread(input.threadId) : null;
+  if (input.threadId && !existing) throw new Error("This conversation is no longer available. Start a new conversation.");
+  const context = existing ?? { activeContextType: input.activeContextType ?? "all", activeContextId: input.activeContextId ?? "" };
+  if (["job", "application", "resume"].includes(context.activeContextType)) {
+    const record = context.activeContextType === "job" ? await repository.getJob(context.activeContextId)
+      : context.activeContextType === "application" ? await repository.getApplication(context.activeContextId)
+      : await repository.getResumeVersion(context.activeContextId);
+    if (!record) throw new Error("The selected record is missing. Choose an existing record in a new conversation.");
+  }
+  const thread = existing ?? await repository.saveCareerCopilotThread({ title: titleFromContent(input.content), ...context });
+  if (input.threadId && ((input.activeContextType && input.activeContextType !== thread.activeContextType) || (input.activeContextId !== undefined && input.activeContextId !== thread.activeContextId))) {
+    throw new Error("This conversation has a different context. Start a new conversation to switch records.");
+  }
   const userMessage = await repository.saveCareerCopilotMessage(
     messageBase(thread.id, "user", input.content),
   );
@@ -118,6 +139,12 @@ export async function sendCareerCopilotMessage(
       messageId: assistantDraft.id,
     })),
     structuredContentJson: {
+      ...("preparationPlan" in response ? { preparationPlan: response.preparationPlan } : {}),
+      ...("preparationReview" in response ? { preparationReview: response.preparationReview } : {}),
+      ...("preparationSkip" in response ? { preparationSkip: response.preparationSkip } : {}),
+      ...("applicationActionContext" in response ? { applicationActionContext: response.applicationActionContext } : {}),
+      ...("profileSkillContext" in response ? { profileSkillContext: response.profileSkillContext } : {}),
+      ...( "privateJobNote" in response ? { privateJobNote: response.privateJobNote } : {}),
       contextPreview: response.contextPreview,
       sourceCount: response.citations.length,
       pendingActionCount: response.pendingActions.length,
@@ -127,6 +154,14 @@ export async function sendCareerCopilotMessage(
 }
 
 async function answer(repository: AppRepository, thread: CareerCopilotThread, query: string) {
+  const preparation = await answerPreparationQuery(repository, thread, query);
+  if (preparation) return preparation;
+  const resumeAnswer = await answerResumeBulletQuery(repository, thread, query);
+  if (resumeAnswer) return resumeAnswer;
+  const applicationAnswer = await answerApplicationNextAction(repository, thread, query);
+  if (applicationAnswer) return applicationAnswer;
+  const skillAnswer = await answerProfileSkillQuery(repository, thread, query);
+  if (skillAnswer) return skillAnswer;
   const lower = query.toLowerCase();
   const toolCalls: CareerCopilotToolCall[] = [];
   const citations: InternalCitation[] = [];
@@ -140,19 +175,42 @@ async function answer(repository: AppRepository, thread: CareerCopilotThread, qu
     if (!citations.some((item) => item.id === next.id)) citations.push(next);
   };
 
+  if (/^set job note\s*:/i.test(query.trimStart())) {
+    const notes = query.trimStart().replace(/^set job note\s*:\s?/i, "");
+    if (thread.activeContextType !== "job" || !thread.activeContextId) return insufficient("Select a saved job before setting its note.");
+    if (!notes.trim() || notes.length > 4000) return insufficient("Supply a nonempty job note of at most 4,000 characters after Set job note:. No note was changed.");
+    const job = await repository.getJob(thread.activeContextId);
+    if (!job) throw new Error("The selected job is missing.");
+    if ((job.notes ?? "").length > 4000) return insufficient("The existing note exceeds this tool's 4,000-character limit. No note was changed.");
+    if ((job.notes ?? "") === notes) return insufficient("This job already has that exact note. No change is needed.");
+    const prior = (await repository.listCareerCopilotMessages(thread.id)).flatMap(message => message.pendingActionsJson);
+    if (prior.some(action => action.type === "set_job_note" && action.status === "pending")) return insufficient("Review or cancel the pending job-note proposal before requesting another.");
+    const action: CareerCopilotPendingAction = {
+      id: createId("pending-action"), threadId: thread.id, messageId: "", type: "set_job_note",
+      label: `Set note for ${job.company} · ${job.roleTitle}`,
+      recordsAffected: [{ entityType: "job", entityId: job.id, label: `${job.company} · ${job.roleTitle}` }],
+      beforeJson: { notes: job.notes ?? "", job }, afterJson: { jobId: job.id, notes },
+      status: "pending", createdAt: nowIso(), resolvedAt: "",
+    };
+    pendingActions.push(action);
+    addCitation(citation("job", job.id, `${job.company} · ${job.roleTitle}`));
+    return insufficient("Review the exact replacement note below. This is your supplied text, not verified career evidence. The saved job stays unchanged until you accept.");
+  }
+
   if (mentionsStatusUpdate(query)) {
     const applications = await repository.listApplications();
     const status = statusFromQuery(query);
-    const target =
-      applications.find((application) => application.id === thread.activeContextId) ??
-      applications.find((application) =>
-        `${application.company} ${application.role}`.toLowerCase().includes(lower.split(" ").find((word) => word.length > 3) ?? ""),
-      ) ??
-      applications[0];
+    const named = applications.filter(application =>
+      application.company.trim() && lower.includes(application.company.toLowerCase()) &&
+      (!applications.some(other => other.id !== application.id && other.company === application.company) || lower.includes(application.role.toLowerCase())),
+    );
+    const target = thread.activeContextType === "application" && thread.activeContextId
+      ? applications.find(application => application.id === thread.activeContextId)
+      : named.length === 1 ? named[0] : undefined;
     addTool("search_applications", { query }, `${applications.length} application records inspected.`);
     if (!target || !status) {
       return {
-        content: "I could not find a specific application and status to update. No records were changed.",
+        content: "Name the company and role, or open Copilot from a specific application. I need one unambiguous application before proposing a change. No application records were changed.",
         toolCalls,
         citations,
         pendingActions,
@@ -166,7 +224,7 @@ async function answer(repository: AppRepository, thread: CareerCopilotThread, qu
       type: "update_application_status",
       label: `Update ${target.company} ${target.role} to ${status}`,
       recordsAffected: [{ entityType: "application", entityId: target.id, label: `${target.company} ${target.role}` }],
-      beforeJson: { status: target.status, appliedDate: target.appliedDate, nextAction: target.nextAction },
+      beforeJson: { status: target.status, appliedDate: target.appliedDate, nextAction: target.nextAction, updatedAt: target.updatedAt },
       afterJson: {
         applicationId: target.id,
         status,
@@ -180,12 +238,41 @@ async function answer(repository: AppRepository, thread: CareerCopilotThread, qu
     addCitation(citation("application", target.id, `Application: ${target.company}`, target.role));
     contextPreview.push({ application: target.id, before: action.beforeJson, after: action.afterJson });
     return {
-      content: `I found the ${target.company} ${target.role} application. I prepared a pending action to change its status from ${target.status} to ${status}; it will not write to SQLite until you confirm it.`,
+      content: `I found the ${target.company} ${target.role} application. I prepared a pending action to change its status from ${target.status} to ${status}; your tracker stays unchanged until you accept it.`,
       toolCalls,
       citations,
       pendingActions,
       contextPreview,
     };
+  }
+
+  if (/\b(summari[sz]e|show|tell me about)\b.*\b(this|selected)\b/.test(lower)) {
+    if (thread.activeContextType === "job") {
+      const job = await repository.getJob(thread.activeContextId);
+      if (!job) return insufficient("Choose a saved job first.");
+      addCitation(citation("job", job.id, `${job.company} · ${job.roleTitle}`));
+      contextPreview.push({ job: job.id, company: job.company, role: job.roleTitle, location: job.location, description: job.rawDescription.slice(0, 1200) });
+      return {
+        ...insufficient(`${job.roleTitle} at ${job.company}. Location: ${job.location || "not recorded"}. Saved description: ${job.rawDescription.slice(0, 1200) || "not recorded"}`),
+        // Explicit local summary display only; not retrieval, embedding or provider context.
+        privateJobNote: { jobId: job.id, text: job.notes ?? "", provenance: "user_authored_unverified", capturedAt: job.updatedAt },
+      };
+    }
+    if (thread.activeContextType === "application") {
+      const application = await repository.getApplication(thread.activeContextId);
+      if (!application) return insufficient("Choose a saved application first.");
+      addCitation(citation("application", application.id, `${application.company} · ${application.role}`));
+      contextPreview.push({ application: application.id, status: application.status, appliedDate: application.appliedDate });
+      return insufficient(`${application.role} at ${application.company}. Tracker status: ${application.status}. Applied date: ${application.appliedDate || "not recorded"}.`);
+    }
+    if (thread.activeContextType === "resume") {
+      const resume = await repository.getResumeVersion(thread.activeContextId);
+      if (!resume) return insufficient("Choose a saved resume first.");
+      addCitation(citation("resume", resume.id, resume.name));
+      contextPreview.push({ resume: resume.id, name: resume.name, status: resume.status, updatedAt: resume.updatedAt });
+      return insufficient(`${resume.name}. Status: ${resume.status}. Last updated: ${resume.updatedAt}. This is the selected saved version; no resume content was changed.`);
+    }
+    return insufficient("Choose a saved job, application or resume to summarize.");
   }
 
   if (lower.includes("which resume") || lower.includes("use for this") || lower.includes("base resume")) {
@@ -320,8 +407,7 @@ async function jobFromContext(repository: AppRepository, thread: CareerCopilotTh
     const resume = await repository.getResumeVersion(thread.activeContextId);
     return resume?.jobId ? repository.getJob(resume.jobId) : null;
   }
-  const jobs = await repository.listJobs();
-  return jobs[0] ?? null;
+  return null;
 }
 
 function titleFromContent(content: string) {

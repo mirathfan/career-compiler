@@ -1,0 +1,4 @@
+import { expect,it,vi } from "vitest";
+import { resumeBulletFixture } from "../../test/resumeBulletFixture";
+import { MemoryRepository } from "../database/memoryRepository";
+it("preserves the document when normalization reorders previously absent parent identity keys",async()=>{const f=await resumeBulletFixture();const save=MemoryRepository.prototype.saveResumeVersion;const spy=vi.spyOn(MemoryRepository.prototype,"saveResumeVersion").mockImplementation(async function(this:MemoryRepository,input){const result=await save.call(this,input);if(input.parentResumeVersionId===f.source.id){expect(result.resumeDocumentJson).toEqual(input.resumeDocumentJson);expect(result.parentResumeVersionId).toBe(f.source.id);}return result;});try {await f.repo.confirmCareerCopilotAction(await f.propose());}finally{spy.mockRestore();f.close();}});
